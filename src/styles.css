@@ -307,3 +307,31 @@ a.button:hover::after{
  0%,100%{opacity:.9}
  50%{opacity:1}
 }
+
+/* True holo image overlay - keeps original colors */
+.holo-image{
+ position:relative;
+ filter:none!important;
+ object-fit:cover;
+}
+.relation-photo{
+ width:180px;
+ height:220px;
+ border:1px solid rgba(70,180,255,.35);
+ box-shadow:0 0 18px rgba(0,180,255,.25);
+}
+.relation{
+ display:flex;
+ gap:20px;
+ align-items:flex-start;
+}
+.holo-image{
+ animation:holoPulse 4s ease-in-out infinite;
+}
+.holo-image::after{
+ content:"";
+}
+@keyframes holoPulse{
+ 0%,100%{opacity:1}
+ 50%{opacity:.92}
+}

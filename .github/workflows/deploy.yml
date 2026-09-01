@@ -30,11 +30,11 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Build
+        run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
           VITE_SUPABASE_STORAGE_BUCKET: ${{ secrets.VITE_SUPABASE_STORAGE_BUCKET }}
-        run: npm run build
 
       # GitHub Pages has no SPA fallback. Serving index.html as 404.html
       # lets BrowserRouter keep clean URLs such as /seraavern/character.
