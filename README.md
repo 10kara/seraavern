@@ -1,4 +1,4 @@
-# Jedi Archives v7 — HoloPanel
+# Jedi Archives v11 — GitHub Pages / HoloPanel
 
 Полная рабочая версия архива Серы Аверн.
 
@@ -58,3 +58,11 @@ When Supabase is configured, the database is authoritative. The UI no longer sil
 
 ## V10 Datapad Glitch
 Added layered datapad interference, large background HUD scan lines, rare scan glitches, heading slice effects, terminal button sweeps and status flicker. Decorative effects are behind panel content so they do not obscure readable text.
+
+
+## v11 GitHub Pages
+- Исправлен `base` Vite для репозитория `seraavern`: `/seraavern/`.
+- React Router использует базовый путь автоматически, поэтому переходы не уходят на `https://10kara.github.io/character`.
+- В сборку добавляется `404.html`, чтобы прямое открытие `/seraavern/character`, `/history`, `/relationships`, `/gallery` и `/admin` не давало 404.
+- GitHub Actions собирает проект напрямую и передаёт Supabase-переменные из Secrets.
+- Storage bucket берётся из `VITE_SUPABASE_STORAGE_BUCKET`, по умолчанию `archive`.
