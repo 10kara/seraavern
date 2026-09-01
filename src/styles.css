@@ -287,3 +287,23 @@ a.button:hover::after{
 }
 .holo-thumb::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent 0 3px,rgba(100,200,255,.08) 4px);pointer-events:none}
 @keyframes holoPulse{50%{opacity:.88;transform:translateY(-1px)}}
+
+
+/* Jedi archive hologram photo effect */
+.holo-thumb,.portrait img,.hero-photo img{
+ position:relative;
+ filter:brightness(.78) contrast(1.12) saturate(1.45) hue-rotate(165deg);
+ box-shadow:0 0 25px rgba(0,150,255,.65), inset 0 0 30px rgba(0,150,255,.3);
+ animation:holoPulse 4s ease-in-out infinite;
+}
+.holo-thumb::after,.portrait::after,.hero-photo::after{
+ content:"";
+ position:absolute;
+ inset:0;
+ pointer-events:none;
+ background:repeating-linear-gradient(0deg,rgba(70,180,255,.12) 0px,rgba(70,180,255,.12) 1px,transparent 3px,transparent 5px);
+}
+@keyframes holoPulse{
+ 0%,100%{opacity:.9}
+ 50%{opacity:1}
+}
