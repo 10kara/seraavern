@@ -1,5 +1,6 @@
 import React,{useEffect,useState,useRef}from'react';
 import{createRoot}from'react-dom/client';
+import{createPortal}from'react-dom';
 import{BrowserRouter,Routes,Route,Link,NavLink,useNavigate,useLocation}from'react-router-dom';
 import{ArrowRight,BookOpen,ChevronLeft,ChevronRight,Database,Image as ImageIcon,LogIn,Menu,Shield,UserRound,X,Save,Trash2,Plus,Upload,RefreshCw,Lock,Terminal,Images,Edit3,Eye,EyeOff}from'lucide-react';
 import{createClient}from'@supabase/supabase-js';
@@ -112,7 +113,75 @@ function useArchive(){
 /* ============================================================
    БАЗОВЫЕ КОМПОНЕНТЫ
    ============================================================ */
-function Background(){return<><div className="hud-grid"/><div className="hud-bars"><i/><i/><i/><i/></div><div className="holo-ambient"><i/><i/><i/></div><div className="holo-particles">{Array.from({length:18},(_,i)=><i key={i}/>)}</div><div className="scanline"/><div className="cursor-orb"/></>}
+function Background(){return<><div className="hud-grid"/><div className="hud-bars"><i/><i/><i/><i/></div><div className="holo-ambient"><i/><i/><i/></div><div className="holo-particles">{Array.from({length:18},(_,i)=><i key={i}/>)}</div><div className="scanline"/></>}
+
+/* ============================================================
+   ГОЛО-КУРСОР
+   Системный курсор полностью скрыт (html.cursor-custom),
+   рисуется собственный орб из styles.css. Мышь отслеживается
+   напрямую через transform + rAF, поэтому орб идёт под
+   указателем без задержки. Тач-устройства не трогаем: там
+   голо-курсора нет и системный курсор не прячется.
+   ============================================================ */
+const CURSOR_HOT='a,button,input[type=file],.check,.card,.g-item,.zoomable,.chapter-toggle,.chapter-nav button,.gallery-filters button,.lb-btn,.upload-btn,.admin-tabs button';
+const CURSOR_TEXT='textarea,input[type=text],input[type=number],input[type=email],input[type=password],input[type=search],input[type=url],select';
+function Cursor(){
+  const ref=useRef(null);
+  useEffect(()=>{
+    const el=ref.current,root=document.documentElement;
+    if(!el||!window.matchMedia)return;
+    const fine=window.matchMedia('(hover:hover) and (pointer:fine)');
+    let active=false,raf=0,live=false,x=-100,y=-100;
+    const paint=()=>{raf=0;el.style.transform=`translate3d(${x}px,${y}px,0)`};
+    const move=e=>{
+      x=e.clientX;y=e.clientY;
+      if(!active)return;
+      // Первый кадр пишем синхронно, иначе орб на миг мелькнет в левом верхнем углу.
+      if(!live){live=true;el.style.transform=`translate3d(${x}px,${y}px,0)`;el.classList.add('is-live');return}
+      if(!raf)raf=requestAnimationFrame(paint);
+    };
+    const over=e=>{
+      if(!active||!e.target||!e.target.closest)return;
+      const text=!!e.target.closest(CURSOR_TEXT);
+      el.classList.toggle('is-text',text);
+      el.classList.toggle('is-hot',!text&&!!e.target.closest(CURSOR_HOT));
+    };
+    const down=()=>{if(active)el.classList.add('is-down')};
+    const up=()=>el.classList.remove('is-down');
+    const leave=()=>el.classList.remove('is-live');
+    const enter=()=>{if(active&&x>=0)el.classList.add('is-live')};
+    const sync=()=>{
+      active=fine.matches;
+      root.classList.toggle('cursor-custom',active);
+      if(!active){el.classList.remove('is-live','is-hot','is-text','is-down')}
+      else if(x>=0)el.classList.add('is-live');
+    };
+    sync();
+    window.addEventListener('pointermove',move,{passive:true});
+    window.addEventListener('pointerover',over,{passive:true});
+    window.addEventListener('pointerdown',down);
+    window.addEventListener('pointerup',up);
+    window.addEventListener('pointercancel',up);
+    document.addEventListener('mouseleave',leave);
+    document.addEventListener('mouseenter',enter);
+    if(fine.addEventListener)fine.addEventListener('change',sync);
+    return()=>{
+      window.removeEventListener('pointermove',move);
+      window.removeEventListener('pointerover',over);
+      window.removeEventListener('pointerdown',down);
+      window.removeEventListener('pointerup',up);
+      window.removeEventListener('pointercancel',up);
+      document.removeEventListener('mouseleave',leave);
+      document.removeEventListener('mouseenter',enter);
+      if(fine.removeEventListener)fine.removeEventListener('change',sync);
+      if(raf)cancelAnimationFrame(raf);
+    };
+  },[]);
+  // Портал в body: .shell имеет overflow:hidden и filter в force-mode,
+  // из-за чего position:fixed у курсора считался бы от .shell, а не от вьюпорта.
+  return createPortal(<div className="cursor-orb" ref={ref} aria-hidden="true"><i/></div>,document.body);
+}
+
 function TypeLine({text,delay=0}){const[out,setOut]=useState('');useEffect(()=>{let i=0;const t=setTimeout(()=>{const id=setInterval(()=>{setOut(text.slice(0,++i));if(i>=text.length)clearInterval(id)},28)},delay);return()=>clearTimeout(t)},[text,delay]);return<span>{out}<i className="type-caret">▌</i></span>}
 function TerminalTicker(){const messages=['ARCHIVE LINK STABLE','FORCE SIGNATURE // LOW INTENSITY','JEDI TEMPLE DATABASE // SA-001','VISUAL RECORDS INDEXED'];const[i,setI]=useState(0);useEffect(()=>{const t=setInterval(()=>setI(x=>(x+1)%messages.length),4200);return()=>clearInterval(t)},[]);return<div className="terminal-ticker"><span>SYS://</span><TypeLine text={messages[i]}/></div>}
 
@@ -121,6 +190,8 @@ function Layout({error='',children}){
   const[forceMode,setForceMode]=useState(false);const[theme,setTheme]=useState(()=>localStorage.getItem('archive-theme')||'jedi');
   const{pathname}=useLocation();
   useEffect(()=>{window.scrollTo({top:0,left:0,behavior:'instant'});document.body.dataset.page=pathname},[pathname]);
+  // Тема зеркалится на <html>, чтобы курсор (портал в body) тоже перекрашивался.
+  useEffect(()=>{document.documentElement.classList.toggle('theme-imperial',theme==='imperial')},[theme]);
   useEffect(()=>{
     const move=e=>{document.documentElement.style.setProperty('--mx',`${(e.clientX/window.innerWidth-.5)*2}`);document.documentElement.style.setProperty('--my',`${(e.clientY/window.innerHeight-.5)*2}`)};
     const keys=[]; const konami=['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight'];
@@ -132,7 +203,7 @@ function Layout({error='',children}){
   },[]);
   const links=[['/','Главная'],['/character','Персонаж'],['/history','История'],['/relationships','Взаимоотношения'],['/gallery','Галерея']];
   return<div className={`shell ${forceMode?'force-mode':''} theme-${theme}`}>
-    <Background/><div className="reading-progress" aria-hidden="true"/><TerminalTicker/>
+    <Background/><Cursor/><div className="reading-progress" aria-hidden="true"/><TerminalTicker/>
     <header className="topbar">
       <Link className="brand" to="/"><b>✦</b> JEDI ARCHIVES</Link>
       <button className="mobile" aria-label="Меню" aria-expanded={open} onClick={()=>setOpen(!open)}>{open?<X/>:<Menu/>}</button>
@@ -319,7 +390,7 @@ function Relationships({r}){
   return<Page title="Взаимоотношения" sub="ЛИЧНЫЕ СВЯЗИ // РАННИЙ ПЕРИОД">
     {r.length===0
       ?<Holo className="empty"><UserRound/><p>Записей о личных связях пока нет.</p></Holo>
-      :<div className="relations relation-map"><svg className="relation-lines" viewBox="0 0 800 100" preserveAspectRatio="none"><line x1="50%" y1="8" x2="15%" y2="92"/><line x1="50%" y1="8" x2="50%" y2="92"/><line x1="50%" y1="8" x2="85%" y2="92"/></svg><div className="relation-node">СЕРА АВЕРН</div>
+      :<div className="relations">
         {r.map(x=><Holo className="relation" key={x.id}>
           {x.image_url
             ?<Frame holo={x.holo_effect!==false} className="photo"><img src={x.image_url} alt={x.name} loading="lazy"/></Frame>
