@@ -66,3 +66,19 @@ Added layered datapad interference, large background HUD scan lines, rare scan g
 - В сборку добавляется `404.html`, чтобы прямое открытие `/seraavern/character`, `/history`, `/relationships`, `/gallery` и `/admin` не давало 404.
 - GitHub Actions собирает проект напрямую и передаёт Supabase-переменные из Secrets.
 - Storage bucket берётся из `VITE_SUPABASE_STORAGE_BUCKET`, по умолчанию `archive`.
+
+## v12 чистка карты связей + голо-курсор
+- На «Взаимоотношениях» убраны декоративный узел `СЕРА АВЕРН` (чёрная плашка
+  `.relation-node` поверх карточек) и пунктирные связи `.relation-lines`;
+  классы `.relation-map/.relation-node/.relation-lines` удалены из стилей,
+  сетка `.relations` осталась как есть.
+- Системный курсор скрыт (`html.cursor-custom ... cursor:none`), виден только
+  голо-орб `.cursor-orb`. Компонент `Cursor` ведёт его по `clientX/clientY`
+  через `transform` + `requestAnimationFrame` (без задержки и без расчёта от
+  `--mx/--my`), реагирует на наведение (кнопки, ссылки, карточки), текст в
+  полях (вертикальная засветка) и нажатие.
+- Орб рендерится порталом в `document.body`, поэтому `overflow:hidden` и
+  `filter` у `.shell` (force-mode) не ломают `position:fixed`.
+- Тема `imperial` (клавиша `T`) зеркалится на `<html>`, чтобы орб перекрашивался.
+- На устройствах без точного указателя (`(hover:hover) and (pointer:fine)`
+  не совпало) системный курсор не скрывается и орб не показывается.
