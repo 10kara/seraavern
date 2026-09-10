@@ -1,4 +1,4 @@
-# Jedi Archives v11 — GitHub Pages / HoloPanel
+# Jedi Archives v12 — GitHub Pages / HoloPanel
 
 Полная рабочая версия архива Серы Аверн.
 
