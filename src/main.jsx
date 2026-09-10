@@ -112,15 +112,27 @@ function useArchive(){
 /* ============================================================
    БАЗОВЫЕ КОМПОНЕНТЫ
    ============================================================ */
-function Background(){return<><div className="hud-grid"/><div className="hud-bars"><i/><i/><i/><i/></div><div className="scanline"/></>}
+function Background(){return<><div className="hud-grid"/><div className="hud-bars"><i/><i/><i/><i/></div><div className="holo-ambient"><i/><i/><i/></div><div className="holo-particles">{Array.from({length:18},(_,i)=><i key={i}/>)}</div><div className="scanline"/><div className="cursor-orb"/></>}
+function TypeLine({text,delay=0}){const[out,setOut]=useState('');useEffect(()=>{let i=0;const t=setTimeout(()=>{const id=setInterval(()=>{setOut(text.slice(0,++i));if(i>=text.length)clearInterval(id)},28)},delay);return()=>clearTimeout(t)},[text,delay]);return<span>{out}<i className="type-caret">▌</i></span>}
+function TerminalTicker(){const messages=['ARCHIVE LINK STABLE','FORCE SIGNATURE // LOW INTENSITY','JEDI TEMPLE DATABASE // SA-001','VISUAL RECORDS INDEXED'];const[i,setI]=useState(0);useEffect(()=>{const t=setInterval(()=>setI(x=>(x+1)%messages.length),4200);return()=>clearInterval(t)},[]);return<div className="terminal-ticker"><span>SYS://</span><TypeLine text={messages[i]}/></div>}
 
 function Layout({error='',children}){
   const[open,setOpen]=useState(false);
+  const[forceMode,setForceMode]=useState(false);const[theme,setTheme]=useState(()=>localStorage.getItem('archive-theme')||'jedi');
   const{pathname}=useLocation();
-  useEffect(()=>{window.scrollTo({top:0,left:0,behavior:'instant'})},[pathname]);
+  useEffect(()=>{window.scrollTo({top:0,left:0,behavior:'instant'});document.body.dataset.page=pathname},[pathname]);
+  useEffect(()=>{
+    const move=e=>{document.documentElement.style.setProperty('--mx',`${(e.clientX/window.innerWidth-.5)*2}`);document.documentElement.style.setProperty('--my',`${(e.clientY/window.innerHeight-.5)*2}`)};
+    const keys=[]; const konami=['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight'];
+    const key=e=>{keys.push(e.key);if(keys.slice(-konami.length).join()===konami.join()){setForceMode(v=>!v);keys.length=0}if(e.key.toLowerCase()==='t'){setTheme(v=>{const n=v==='jedi'?'imperial':'jedi';localStorage.setItem('archive-theme',n);return n})}};
+    const scroll=()=>{const d=document.documentElement;document.documentElement.style.setProperty('--read',`${Math.min(100,Math.max(0,scrollY/(d.scrollHeight-innerHeight||1)*100))}%`)};
+    const click=()=>{try{const A=window.AudioContext||window.webkitAudioContext;if(!A)return;const a=new A(),o=a.createOscillator(),g=a.createGain();o.frequency.value=520;g.gain.setValueAtTime(.025,a.currentTime);g.gain.exponentialRampToValueAtTime(.001,a.currentTime+.06);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+.06)}catch{}};
+    window.addEventListener('pointermove',move);window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);scroll();
+    return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('keydown',key);window.removeEventListener('scroll',scroll);document.removeEventListener('click',click)};
+  },[]);
   const links=[['/','Главная'],['/character','Персонаж'],['/history','История'],['/relationships','Взаимоотношения'],['/gallery','Галерея']];
-  return<div className="shell">
-    <Background/>
+  return<div className={`shell ${forceMode?'force-mode':''} theme-${theme}`}>
+    <Background/><div className="reading-progress" aria-hidden="true"/><TerminalTicker/>
     <header className="topbar">
       <Link className="brand" to="/"><b>✦</b> JEDI ARCHIVES</Link>
       <button className="mobile" aria-label="Меню" aria-expanded={open} onClick={()=>setOpen(!open)}>{open?<X/>:<Menu/>}</button>
@@ -162,13 +174,14 @@ function Frame({holo=true,className='',children}){
 }
 
 function Data({label,value}){return<div className="data-row"><span>{label}</span><strong>{clean(value)}</strong></div>}
-function Card({icon,title,text,to}){return<Link className="card" to={to}><div className="card-icon">{icon}</div><span><b>{title}</b><small>{text}</small></span><ChevronRight/></Link>}
+function Card({icon,title,text,to,meta}){return<Link className="card" to={to}><div className="card-icon">{icon}</div><span><em>{meta||'ARCHIVE MODULE'}</em><b>{title}</b><small>{text}</small></span><ChevronRight/></Link>}
 
 /* ============================================================
    ЛАЙТБОКС
    ============================================================ */
 function Lightbox({items,index,onClose,onStep}){
   const item=items[index];
+  const touch=useRef(null);
   useEffect(()=>{
     const h=e=>{
       if(e.key==='Escape')onClose();
@@ -181,12 +194,12 @@ function Lightbox({items,index,onClose,onStep}){
     return()=>{window.removeEventListener('keydown',h);document.body.style.overflow=prev};
   },[onClose,onStep]);
   if(!item)return null;
-  return<div className="lightbox" role="dialog" aria-modal="true" onClick={onClose}>
+  return<div className="lightbox" role="dialog" aria-modal="true" onTouchStart={e=>touch.current=e.touches[0].clientX} onTouchEnd={e=>{if(touch.current!==null){const d=e.changedTouches[0].clientX-touch.current;if(Math.abs(d)>45)onStep(d<0?1:-1);touch.current=null}}} onClick={onClose}>
     <button className="lb-btn lb-close" aria-label="Закрыть" onClick={onClose}><X size={20}/></button>
     {items.length>1&&<button className="lb-btn lb-prev" aria-label="Предыдущее" onClick={e=>{e.stopPropagation();onStep(-1)}}><ChevronLeft size={26}/></button>}
     <figure onClick={e=>e.stopPropagation()}>
       <Frame holo><img src={item.src} alt={item.alt||''}/></Frame>
-      <figcaption><span>{item.caption}</span><span>{index+1} / {items.length}</span></figcaption>
+      <figcaption><span>{item.caption}</span><span>{index+1} / {items.length}</span></figcaption><div className="lb-thumbs">{items.map((x,i)=><button key={i} className={i===index?'active':''} onClick={e=>{e.stopPropagation();onStep(i-index)}}><img src={x.src} alt=""/></button>)}</div>
     </figure>
     {items.length>1&&<button className="lb-btn lb-next" aria-label="Следующее" onClick={e=>{e.stopPropagation();onStep(1)}}><ChevronRight size={26}/></button>}
   </div>;
@@ -231,10 +244,11 @@ function Home({c,ch}){
         <small>БЕЛАЯ ЗВЕЗДА // АРХИВ ХРАМА ДЖЕДАЕВ</small>
       </Holo>
     </section>
+    <section className="archive-updates holo-panel"><p className="kicker">ПОСЛЕДНИЕ ЗАПИСИ // LIVE FEED</p><h2>ХРОНОЛОГИЯ СИЛЫ</h2><div className="home-timeline">{ch.slice(0,4).map((x,i)=><div key={x.id}><b>{String(x.chapter_number||i+1).padStart(2,'0')}</b><span>{x.title}</span><small>ЗАПИСЬ ДОБАВЛЕНА В АРХИВ</small></div>)}</div><Link to="/history" className="btn">ОТКРЫТЬ ИСТОРИЮ <ArrowRight size={16}/></Link></section>
     <section className="cards">
-      <Card icon={<BookOpen/>} title="История" text="Жизненный путь Серы до обучения в Ордене." to="/history"/>
-      <Card icon={<UserRound/>} title="Взаимоотношения" text="Люди, сыгравшие важную роль в его жизни." to="/relationships"/>
-      <Card icon={<Database/>} title="Архив" text={`${chapterCount(ch.length)} в текущем архиве.`} to="/character"/>
+      <Card icon={<Images/>} meta="VISUAL ARCHIVE // 01" title="Галерея" text="Портреты и визуальные записи из архива Ордена." to="/gallery"/>
+      <Card icon={<UserRound/>} meta="CONNECTIONS // 02" title="Взаимоотношения" text="Семья, наставники и важные связи Серы." to="/relationships"/>
+      <Card icon={<Database/>} meta="PERSONNEL FILE // 03" title="Личное досье" text="Параметры, характер и архивная запись персонажа." to="/character"/>
     </section>
   </>;
 }
@@ -276,17 +290,18 @@ function Character({c}){
 }
 
 function History({ch}){
-  const[lb,setLb]=useState(-1);
+  const[lb,setLb]=useState(-1);const[open,setOpen]=useState(0);
   const visible=[...ch].filter(x=>x.published!==false).sort((a,b)=>(a.chapter_number??0)-(b.chapter_number??0));
   const covers=visible.filter(x=>x.cover_image);
   return<Page title="История" sub="ХРОНОЛОГИЯ // РАННИЕ ГОДЫ">
     {visible.length===0
       ?<Holo className="empty"><BookOpen/><p>Опубликованных глав пока нет. Добавьте их через админ-панель.</p></Holo>
       :<div className="timeline">
-        {visible.map((x,i)=><article className="chapter" key={x.id}>
+        {visible.map((x,i)=><article className={`chapter ${open===i?'chapter-open':''}`} key={x.id}>
           <div className="marker">{x.chapter_number!=null?String(x.chapter_number).padStart(2,'0'):String(i+1).padStart(2,'0')}</div>
           <Holo className="chapter-panel">
             <p className="kicker">ГЛАВА {x.chapter_number??i+1}</p>
+            <button className="chapter-toggle" onClick={()=>setOpen(open===i?-1:i)}>{open===i?'СВЕРНУТЬ':'ОТКРЫТЬ'} ЗАПИСЬ</button>{open===i&&<span className="chapter-nav">{i>0&&<button onClick={()=>setOpen(i-1)}>← ПРЕД.</button>}{i<visible.length-1&&<button onClick={()=>setOpen(i+1)}>СЛЕД. →</button>}</span>}
             <h2>{x.title}</h2>
             <div className="section-line"/>
             {x.cover_image&&<Frame holo={x.holo_effect!==false} className="cover zoomable" onClick={()=>setLb(covers.findIndex(cv=>cv.id===x.id))}><img src={x.cover_image} alt={x.title||''} loading="lazy"/></Frame>}
@@ -304,7 +319,7 @@ function Relationships({r}){
   return<Page title="Взаимоотношения" sub="ЛИЧНЫЕ СВЯЗИ // РАННИЙ ПЕРИОД">
     {r.length===0
       ?<Holo className="empty"><UserRound/><p>Записей о личных связях пока нет.</p></Holo>
-      :<div className="relations">
+      :<div className="relations relation-map"><svg className="relation-lines" viewBox="0 0 800 100" preserveAspectRatio="none"><line x1="50%" y1="8" x2="15%" y2="92"/><line x1="50%" y1="8" x2="50%" y2="92"/><line x1="50%" y1="8" x2="85%" y2="92"/></svg><div className="relation-node">СЕРА АВЕРН</div>
         {r.map(x=><Holo className="relation" key={x.id}>
           {x.image_url
             ?<Frame holo={x.holo_effect!==false} className="photo"><img src={x.image_url} alt={x.name} loading="lazy"/></Frame>
@@ -320,20 +335,24 @@ function Relationships({r}){
   </Page>;
 }
 
+function EventLog(){const events=['Архивная система активирована','Синхронизация визуальных записей завершена','Профиль Серы Аверн открыт для чтения','Голографический протокол подключён'];return<Page title="Журнал событий" sub="RESTRICTED // DEV LOG"><Holo className="event-log">{events.map((x,i)=><div className="event-row" key={x}><b>0{i+1}</b><span>{x}</span><time>SA-00{i+1}</time></div>)}</Holo></Page>}
+function NotFound(){return<Page title="Запись не найдена" sub="ERROR // ARCHIVE CORRUPTED"><Holo className="empty"><Terminal/><p>Запрошенный сектор архива отсутствует или был перемещён.</p><Link className="btn" to="/">ВЕРНУТЬСЯ В АРХИВ <ArrowRight size={16}/></Link></Holo></Page>}
+
 function Gallery({c,gallery}){
-  const[lb,setLb]=useState(-1);
-  const items=gallery.length?gallery:(c?.image_url?[{id:'main',image_url:c.image_url,title:'Основной портрет',caption:`PERSONNEL // ${c.name}`}]:[]);
+  const[lb,setLb]=useState(-1);const[filter,setFilter]=useState('all');
+  const raw=gallery.length?gallery:(c?.image_url?[{id:'main',image_url:c.image_url,title:'Основной портрет',caption:`PERSONNEL // ${c.name}`}]:[]);
+  const items=filter==='all'?raw:raw.filter(x=>(x.type||x.category||'archive').toLowerCase()===filter);
   const lightboxItems=items.map(x=>({src:x.image_url||x.url,alt:x.caption||x.title||'',caption:x.caption||x.title||'АРХИВНЫЙ МАТЕРИАЛ'}));
   return<Page title="Галерея" sub="ВИЗУАЛЬНЫЙ АРХИВ">
     {items.length===0
       ?<Holo className="empty"><Images/><p>Изображения появятся здесь после загрузки.</p></Holo>
-      :<div className="gallery">
+      :<><div className="gallery-filters"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>ВСЕ</button><button className={filter==='portrait'?'active':''} onClick={()=>setFilter('portrait')}>ПОРТРЕТЫ</button><button className={filter==='archive'?'active':''} onClick={()=>setFilter('archive')}>АРХИВ</button></div><div className="gallery">
         {items.map((x,i)=><figure className="holo-panel g-item" key={x.id} onClick={()=>setLb(i)}>
           <Frame holo={x.holo_effect!==false}><img src={x.image_url||x.url} alt={x.caption||x.title||'Архивный снимок'} loading="lazy"/></Frame>
           <span className="zoom"><ImageIcon size={16}/></span>
           <figcaption>{x.caption||x.title||'АРХИВНЫЙ МАТЕРИАЛ'}</figcaption>
         </figure>)}
-      </div>}
+      </div></>}
     {lb>=0&&<Lightbox items={lightboxItems} index={lb} onClose={()=>setLb(-1)} onStep={d=>setLb(i=>(i+d+items.length)%items.length)}/>}
   </Page>;
 }
@@ -755,7 +774,7 @@ function TextField({label,value,onChange,rows='5'}){
 function App(){
   const archive=useArchive();
   if(!archive.loaded)return<Layout>
-    <Page title="Jedi Archives" sub="УСТАНОВКА СВЯЗИ"><div className="loading">ПОДКЛЮЧЕНИЕ К АРХИВУ…</div></Page>
+    <Page title="Jedi Archives" sub="УСТАНОВКА СВЯЗИ"><div className="loading skeleton-loading"><div className="skeleton sk-title"/><div className="skeleton sk-panel"/><div className="skeleton sk-panel"/><p>ПОДКЛЮЧЕНИЕ К АРХИВУ…</p></div></Page>
   </Layout>;
   return<Layout error={archive.error}>
     <Routes>
@@ -764,9 +783,9 @@ function App(){
       <Route path="/history" element={<History ch={archive.chapters}/>}/>
       <Route path="/relationships" element={<Relationships r={archive.relationships}/>}/>
       <Route path="/gallery" element={<Gallery c={archive.character} gallery={archive.gallery}/>}/>
-      <Route path="/admin" element={<AdminLogin/>}/>
+      <Route path="/events" element={<EventLog/>}/><Route path="/admin" element={<AdminLogin/>}/>
       <Route path="/admin/panel" element={<AdminGuard><AdminPanel archive={archive}/></AdminGuard>}/>
-      <Route path="*" element={<Home c={archive.character} ch={archive.chapters}/>}/>
+      <Route path="*" element={<NotFound/>}/>
     </Routes>
   </Layout>;
 }

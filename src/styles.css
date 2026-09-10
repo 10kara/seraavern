@@ -623,3 +623,136 @@ button{cursor:pointer}
   body::before{opacity:.35}
   .glitch::before,.glitch::after{display:none}
 }
+
+/* ---------- Динамика интерфейса: живой архив ---------- */
+/* Мягкое появление блоков делает переходы между разделами ощутимыми,
+   но не мешает чтению и не превращает интерфейс в аттракцион. */
+.page,.hero{animation:archiveReveal .7s cubic-bezier(.16,1,.3,1) both}
+@keyframes archiveReveal{from{opacity:0;transform:translateY(14px);filter:blur(3px)}to{opacity:1;transform:none;filter:none}}
+.hero-copy{animation:panelRise .8s .08s cubic-bezier(.16,1,.3,1) both}
+.hero-photo{animation:panelRise .8s .2s cubic-bezier(.16,1,.3,1) both}
+@keyframes panelRise{from{opacity:0;transform:translateY(20px) scale(.985)}to{opacity:1;transform:none}}
+.cards .card{animation:cardIn .55s cubic-bezier(.16,1,.3,1) both}
+.cards .card:nth-child(1){animation-delay:.18s}.cards .card:nth-child(2){animation-delay:.28s}.cards .card:nth-child(3){animation-delay:.38s}
+@keyframes cardIn{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
+
+/* Карточки реагируют на курсор, а световой блик проходит по панели при наведении. */
+.card{transform:translateZ(0);transition:transform .3s ease,background .3s ease,border-color .3s ease,box-shadow .3s ease}
+.card:before{content:"";position:absolute;top:0;bottom:0;left:-45%;width:28%;background:linear-gradient(90deg,transparent,rgba(125,220,255,.14),transparent);transform:skewX(-18deg);transition:left .65s ease;pointer-events:none}
+.card:hover{transform:translateY(-5px);border-color:rgba(86,187,255,.7);box-shadow:0 12px 30px rgba(0,80,145,.16),inset 0 0 22px rgba(60,170,255,.06)}
+.card:hover:before{left:125%}
+.card:hover .card-icon{transform:rotate(-6deg) scale(1.08);color:#a9e4ff;text-shadow:0 0 15px rgba(86,187,255,.75)}
+.card-icon{transition:transform .3s ease,color .3s ease,text-shadow .3s ease}
+
+/* Кнопка получает короткий импульс света, как команда терминалу. */
+.btn{position:relative;overflow:hidden;transition:transform .2s ease,box-shadow .2s ease,background .2s ease}
+.btn:after{content:"";position:absolute;top:-20%;bottom:-20%;left:-70%;width:35%;background:rgba(210,245,255,.25);transform:skewX(-20deg);transition:left .45s ease}
+.btn:hover{transform:translateY(-2px);box-shadow:0 7px 22px rgba(25,130,205,.22)}
+.btn:hover:after{left:135%}
+
+/* Плавающая подсветка фотографии добавляет глубину, не двигая контент. */
+.hero-photo .hero-frame{box-shadow:0 0 0 rgba(70,190,255,0);animation:photoGlow 5s ease-in-out infinite}
+@keyframes photoGlow{0%,100%{box-shadow:0 0 0 rgba(70,190,255,0)}50%{box-shadow:0 0 28px rgba(70,190,255,.16)}}
+
+@media(prefers-reduced-motion:reduce){
+  .page,.hero,.hero-copy,.hero-photo,.cards .card,.hero-photo .hero-frame{animation:none!important}
+  .card:hover,.btn:hover{transform:none}
+}
+
+/* ---------- Сигнальные глитч-эффекты ---------- */
+/* Заголовок иногда «теряет синхронизацию» как настоящий архивный терминал.
+   Интервалы между импульсами большие, поэтому эффект не утомляет. */
+.heading .glitch::before,.heading .glitch::after{
+  opacity:0;
+  animation:signalGlitch 7s steps(1,end) infinite;
+}
+.heading .glitch::after{animation-delay:.06s}
+@keyframes signalGlitch{
+  0%,87%,100%{opacity:0;transform:translate(0)}
+  88%{opacity:.8;transform:translate(-3px,0);clip-path:inset(12% 0 72% 0)}
+  89%{opacity:.35;transform:translate(4px,1px);clip-path:inset(58% 0 22% 0)}
+  90%{opacity:.75;transform:translate(-2px,-1px);clip-path:inset(32% 0 48% 0)}
+  91%{opacity:0}
+}
+
+/* Короткий цифровой сдвиг панели и «битые» линии по краям. */
+.heading{animation:headingSignal .7s .9s both,headingGlitch 11s 2s steps(1,end) infinite}
+@keyframes headingSignal{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes headingGlitch{
+  0%,92%,100%{transform:none;filter:none}
+  93%{transform:translateX(2px);filter:hue-rotate(20deg)}
+  94%{transform:translateX(-1px);filter:none}
+  95%{transform:translateX(1px);filter:hue-rotate(-15deg)}
+  96%{transform:none;filter:none}
+}
+
+/* На интерактивных панелях глитч проявляется только при наведении. */
+.holo-panel:hover:after{animation:panelScan 2.2s linear infinite;opacity:.75}
+.holo-panel:hover{border-color:rgba(86,187,255,.55)}
+
+/* Локальный цифровой шум на активной кнопке меню. */
+.brand:hover b{animation:starFlicker .5s steps(2,end) infinite}
+@keyframes starFlicker{
+  0%,100%{opacity:1;transform:none}
+  35%{opacity:.45;transform:translateX(2px)}
+  70%{opacity:1;transform:translateX(-1px)}
+}
+
+@media(prefers-reduced-motion:reduce){
+  .heading,.heading .glitch::before,.heading .glitch::after,.brand:hover b{animation:none!important}
+}
+
+/* Дополнительный слой интерактивного архива */
+:root{--mx:0;--my:0;--read:0%}
+.reading-progress{position:fixed;left:0;top:0;width:var(--read);height:2px;background:var(--cyan);box-shadow:0 0 10px var(--cyan);z-index:100;transition:width .12s linear}
+.hero-photo{transform:translate(calc(var(--mx)*-3px),calc(var(--my)*-3px))}
+.hero-copy{transform:translate(calc(var(--mx)*1px),calc(var(--my)*1px))}
+.empty .btn{margin-top:16px}
+.force-mode{filter:hue-rotate(155deg) saturate(1.25)}
+.force-mode:after{content:'FORCE SIGNATURE DETECTED // EMERGENCY ARCHIVE MODE';position:fixed;right:20px;bottom:18px;z-index:90;color:#ff6b8a;font:10px Orbitron;letter-spacing:1px;text-shadow:0 0 10px #ff3e76;animation:emergencyBlink 1s steps(2,end) infinite}
+@keyframes emergencyBlink{50%{opacity:.35}}
+.g-item{transition:transform .35s ease,border-color .35s ease,box-shadow .35s ease}
+.g-item:hover{transform:translateY(-7px) rotate(.4deg);border-color:rgba(110,220,255,.75);box-shadow:0 15px 35px rgba(0,100,180,.2)}
+.g-item figcaption{transition:color .25s ease}.g-item:hover figcaption{color:#dff7ff}
+.relation{transition:transform .35s ease,border-color .35s ease}.relation:hover{transform:translateX(7px);border-color:rgba(86,187,255,.65)}
+.chapter{animation:chapterIn .6s both}.chapter:nth-child(2){animation-delay:.12s}.chapter:nth-child(3){animation-delay:.24s}
+@keyframes chapterIn{from{opacity:0;transform:translateX(-16px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.hero-photo,.hero-copy{transform:none}.chapter{animation:none}.force-mode:after{animation:none}}
+
+/* Live archive modules */
+.cursor-orb{position:fixed;left:calc(50% + var(--mx)*50vw);top:calc(50% + var(--my)*50vh);width:9px;height:9px;border:1px solid #a8e5ff;border-radius:50%;box-shadow:0 0 14px 4px rgba(86,187,255,.55);z-index:120;pointer-events:none;mix-blend-mode:screen;transition:left .12s ease,top .12s ease}
+.terminal-ticker{position:fixed;bottom:0;left:0;right:0;z-index:20;padding:7px 22px;background:rgba(2,8,14,.9);border-top:1px solid rgba(65,160,255,.2);color:#6da9c8;font:9px Orbitron;letter-spacing:1.5px}.terminal-ticker span:first-child{color:#ffc46b;margin-right:9px}.type-caret{color:var(--cyan);font-style:normal;animation:caretBlink .7s steps(1) infinite}@keyframes caretBlink{50%{opacity:0}}
+.theme-imperial{--cyan:#ff6d84;--glow:rgba(255,70,90,.7);--line:rgba(255,75,90,.3);--panel-border:rgba(255,75,90,.4)}
+.gallery-filters{display:flex;gap:6px;margin:0 0 16px}.gallery-filters button{background:rgba(5,20,32,.75);border:1px solid var(--line);color:var(--muted);padding:9px 14px;font:9px Rajdhani;letter-spacing:1.5px;cursor:pointer}.gallery-filters button.active,.gallery-filters button:hover{color:#fff;border-color:var(--cyan);box-shadow:0 0 12px var(--cyan-soft)}
+@media(max-width:600px){.cursor-orb{display:none}.terminal-ticker{font-size:7px;padding:7px 12px}.gallery-filters{overflow:auto}.gallery-filters button{white-space:nowrap}}
+.lb-thumbs{display:flex;gap:6px;justify-content:center;margin-top:12px;max-width:min(720px,90vw);overflow:auto}.lb-thumbs button{width:54px;height:40px;padding:0;border:1px solid var(--line);background:#02070b;opacity:.55;cursor:pointer}.lb-thumbs button.active{opacity:1;border-color:var(--cyan);box-shadow:0 0 10px var(--cyan-soft)}.lb-thumbs img{width:100%;height:100%;object-fit:cover}.skeleton{background:linear-gradient(90deg,rgba(30,80,110,.1),rgba(100,190,230,.22),rgba(30,80,110,.1));background-size:200% 100%;animation:skeleton 1.3s infinite}@keyframes skeleton{to{background-position:-200% 0}}
+.chapter:not(.chapter-open) .chapter-panel>p:not(.kicker),.chapter:not(.chapter-open) .chapter-panel .cover{display:none}.chapter-toggle{float:right;position:relative;z-index:3;background:none;border:1px solid var(--line);color:var(--cyan);padding:5px 8px;font:8px Rajdhani;letter-spacing:1px;cursor:pointer}.chapter-toggle:hover{background:var(--cyan-faint)}
+.relation-map{position:relative}.relation-node{position:absolute;top:-18px;left:50%;transform:translateX(-50%);border:1px solid var(--cyan);padding:6px 12px;background:var(--bg);color:var(--cyan);font:9px Orbitron;z-index:3}.relation-lines{position:absolute;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none;opacity:.35}.relation-lines line{stroke:var(--cyan);stroke-width:1;stroke-dasharray:5 5;animation:dash 5s linear infinite}@keyframes dash{to{stroke-dashoffset:-40}}.relation-map>*:not(.relation-lines){position:relative;z-index:1}.sk-title{height:35px;width:45%;margin-bottom:25px}.sk-panel{height:120px;margin:12px 0}.skeleton-loading{padding:30px}.archive-updates{padding:28px;margin:25px 0}.archive-updates h2{font:18px Orbitron;font-weight:400;letter-spacing:2px}.home-timeline{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}.home-timeline div{border-left:1px solid var(--cyan);padding:10px 12px;background:rgba(20,100,150,.06)}.home-timeline b{color:var(--cyan);font:16px Orbitron;display:block}.home-timeline span,.home-timeline small{display:block;margin-top:8px}.home-timeline small{color:var(--dim);font-size:8px}.event-log{padding:25px}.event-row{display:grid;grid-template-columns:40px 1fr auto;gap:15px;padding:15px;border-bottom:1px solid var(--line);color:var(--muted)}.event-row b{color:var(--cyan)}.event-row time{color:var(--dim);font-size:9px}@media(max-width:700px){.home-timeline{grid-template-columns:1fr 1fr}.event-row{grid-template-columns:30px 1fr}.event-row time{display:none}}
+.chapter-nav{position:relative;z-index:3;float:right;margin-right:8px}.chapter-nav button{background:none;border:0;color:var(--muted);font:8px Rajdhani;cursor:pointer}.chapter-nav button:hover{color:var(--cyan)}
+
+/* Навигационные модули главной страницы */
+.card>span{min-width:0}.card em{display:block;color:var(--dim);font:8px Orbitron;letter-spacing:1.2px;font-style:normal;margin-bottom:7px}.card b{display:block;font-family:Orbitron;font-weight:400;letter-spacing:1.2px}.card small{display:block;line-height:1.45;margin-top:6px}.cards .card:nth-child(2) .card-icon{color:#b9a6ff}.cards .card:nth-child(3) .card-icon{color:var(--amber)}
+
+/* Голографический фон: медленно вращающиеся орбиты и световые облака */
+.holo-ambient{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;opacity:.7}
+.holo-ambient:before,.holo-ambient:after{content:"";position:absolute;border-radius:50%;filter:blur(35px);mix-blend-mode:screen}
+.holo-ambient:before{width:42vw;height:42vw;left:-13vw;top:21vh;background:radial-gradient(circle,rgba(40,160,255,.12),rgba(20,80,160,.04) 42%,transparent 70%);animation:ambientFloat 14s ease-in-out infinite}
+.holo-ambient:after{width:34vw;height:34vw;right:-8vw;top:8vh;background:radial-gradient(circle,rgba(80,210,255,.1),rgba(30,70,180,.03) 45%,transparent 70%);animation:ambientFloat 18s 2s ease-in-out infinite reverse}
+.holo-ambient i{position:absolute;left:50%;top:48%;border:1px solid rgba(75,190,255,.09);border-radius:50%;transform:translate(-50%,-50%) rotateX(64deg);box-shadow:0 0 18px rgba(50,170,255,.05),inset 0 0 18px rgba(50,170,255,.04)}
+.holo-ambient i:nth-child(1){width:38vw;height:13vw;animation:holoOrbit 16s linear infinite}
+.holo-ambient i:nth-child(2){width:58vw;height:21vw;animation:holoOrbit 24s linear infinite reverse;opacity:.7}
+.holo-ambient i:nth-child(3){width:78vw;height:29vw;animation:holoOrbit 32s linear infinite;opacity:.45}
+@keyframes holoOrbit{to{transform:translate(-50%,-50%) rotateX(64deg) rotateZ(360deg)}}
+@keyframes ambientFloat{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(4vw,-3vh,0) scale(1.12)}}
+.shell{background:radial-gradient(ellipse at 50% 46%,rgba(15,75,115,.045),transparent 48%)}
+@media(max-width:600px){.holo-ambient i{opacity:.35}.holo-ambient i:nth-child(3){display:none}.holo-ambient:before,.holo-ambient:after{filter:blur(25px);opacity:.65}}
+@media(prefers-reduced-motion:reduce){.holo-ambient i,.holo-ambient:before,.holo-ambient:after{animation:none}}
+
+/* Плавающие голографические частицы и вертикальные лучи */
+.holo-particles{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;opacity:.7}
+.holo-particles i{position:absolute;width:2px;height:2px;border-radius:50%;background:#86dcff;box-shadow:0 0 8px 2px rgba(75,190,255,.7);animation:particleDrift linear infinite;animation-duration:12s;bottom:-5vh}
+.holo-particles i:nth-child(1){left:6%;animation-delay:-2s}.holo-particles i:nth-child(2){left:13%;animation-delay:-8s;animation-duration:16s}.holo-particles i:nth-child(3){left:21%;animation-delay:-5s}.holo-particles i:nth-child(4){left:29%;animation-delay:-11s;animation-duration:19s}.holo-particles i:nth-child(5){left:37%;animation-delay:-3s}.holo-particles i:nth-child(6){left:44%;animation-delay:-14s;animation-duration:15s}.holo-particles i:nth-child(7){left:51%;animation-delay:-7s}.holo-particles i:nth-child(8){left:58%;animation-delay:-10s;animation-duration:17s}.holo-particles i:nth-child(9){left:64%;animation-delay:-1s}.holo-particles i:nth-child(10){left:70%;animation-delay:-9s;animation-duration:20s}.holo-particles i:nth-child(11){left:76%;animation-delay:-4s}.holo-particles i:nth-child(12){left:82%;animation-delay:-13s;animation-duration:14s}.holo-particles i:nth-child(13){left:88%;animation-delay:-6s}.holo-particles i:nth-child(14){left:94%;animation-delay:-16s;animation-duration:18s}.holo-particles i:nth-child(15){left:17%;animation-delay:-12s}.holo-particles i:nth-child(16){left:47%;animation-delay:-4s}.holo-particles i:nth-child(17){left:73%;animation-delay:-15s}.holo-particles i:nth-child(18){left:97%;animation-delay:-8s}
+@keyframes particleDrift{0%{transform:translate3d(0,10vh,0) scale(.5);opacity:0}12%{opacity:.8}50%{transform:translate3d(25px,-50vh,0) scale(1.3);opacity:.55}88%{opacity:.7}100%{transform:translate3d(-18px,-115vh,0) scale(.2);opacity:0}}
+.holo-ambient:after{box-shadow:inset 0 0 100px rgba(40,150,255,.04)}
+@media(max-width:600px){.holo-particles{opacity:.3}.holo-particles i:nth-child(even){display:none}}
+@media(prefers-reduced-motion:reduce){.holo-particles i{animation:none;opacity:.18}}
