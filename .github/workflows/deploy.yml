@@ -33,7 +33,9 @@ jobs:
         run: npm run build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          # Ключ принимается под любым из двух имён.
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
           VITE_SUPABASE_STORAGE_BUCKET: ${{ secrets.VITE_SUPABASE_STORAGE_BUCKET }}
 
       # GitHub Pages has no SPA fallback. Serving index.html as 404.html

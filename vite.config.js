@@ -9,4 +9,13 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
   },
+  // Dev-сервер доступен в веб-превью (0.0.0.0 + разрешённый внешний хост).
+  server: {
+    host: true,
+    allowedHosts: true,
+  },
+  preview: {
+    host: true,
+    allowedHosts: true,
+  },
 })
