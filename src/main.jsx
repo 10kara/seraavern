@@ -2,7 +2,7 @@ import React,{useEffect,useState,useRef,useId}from'react';
 import{createRoot}from'react-dom/client';
 import{createPortal}from'react-dom';
 import{BrowserRouter,Routes,Route,Link,NavLink,useNavigate,useLocation}from'react-router-dom';
-import{ArrowRight,BookOpen,ChevronLeft,ChevronRight,Database,Image as ImageIcon,LogIn,Menu,Shield,UserRound,X,Save,Trash2,Plus,Upload,RefreshCw,Lock,Terminal,Images,Edit3,Eye,EyeOff,Download,FileJson,ExternalLink,ArrowUp,ArrowDown,ClipboardPaste,Undo2,Search,Check,AlertTriangle}from'lucide-react';
+import{ArrowRight,BookOpen,ChevronLeft,ChevronRight,Database,Image as ImageIcon,LogIn,Menu,Shield,UserRound,X,Save,Trash2,Plus,Upload,RefreshCw,Lock,Terminal,Images,Edit3,Eye,EyeOff,Download,FileJson,ExternalLink,ArrowUp,ArrowDown,ClipboardPaste,Undo2,Search,Check,AlertTriangle,Activity,Radio,Orbit,Crosshair,ShieldCheck}from'lucide-react';
 import{createClient}from'@supabase/supabase-js';
 import'./styles.css';
 
@@ -277,7 +277,7 @@ function Layout({error='',children}){
     </header>
     <main>
       {error&&<div className="db-error"><Terminal size={14}/> ОШИБКА БАЗЫ ДАННЫХ // {error}</div>}
-      {children}
+      <div className="route-stage" key={pathname}>{children}</div>
     </main>
     <footer>
       <span>ОРДЕН ДЖЕДАЕВ // АРХИВ</span>
@@ -345,7 +345,27 @@ function Lightbox({items,index,onClose,onStep}){
 /* ============================================================
    ПУБЛИЧНЫЕ СТРАНИЦЫ
    ============================================================ */
-function Home({c,ch}){
+function SignalDashboard({ch,r,g}){
+  const published=ch.filter(x=>x.published!==false).length;
+  const values=[
+    ['ГЛАВЫ',published,String(published).padStart(2,'0'),'cyan'],
+    ['СВЯЗИ',r.length,String(r.length).padStart(2,'0'),'amber'],
+    ['СНИМКИ',g.length,String(g.length).padStart(2,'0'),'violet']
+  ];
+  return<section className="signal-dashboard holo-panel">
+    <div className="signal-copy"><p className="kicker">ARCHIVE TELEMETRY // SA-001</p><h2>СИГНАЛ ЗАПИСИ</h2><p>Все сектора архива синхронизированы. Новые данные появляются после подключения к базе Ордена.</p><div className="signal-readout"><Radio size={14}/><span>LIVE LINK</span><b>СТАБИЛЕН</b></div></div>
+    <div className="signal-orb" aria-label="Сигнал архива стабилен"><div className="orb-ring ring-one"/><div className="orb-ring ring-two"/><div className="orb-core"><span>SA</span><small>001</small></div><i className="orb-cross cross-a"/><i className="orb-cross cross-b"/></div>
+    <div className="signal-metrics">{values.map(([label,value,code,color])=><div className={`signal-metric ${color}`} key={label}><span>{label}</span><b>{code}</b><i><em style={{'--metric':`${Math.min(100,25+value*12)}%`}}/></i><small>{value?`${value} INDEXED`:'NO DATA'}</small></div>)}</div>
+    <div className="signal-footer"><span><Activity size={13}/> ARCHIVE INTEGRITY</span><b>98.4%</b><span className="signal-bars"><i/><i/><i/><i/><i/><i/></span></div>
+  </section>;
+}
+
+function RelationshipConstellation({r}){
+  const nodes=r.slice(0,8).map((x,i)=>{const angle=(-90+(360/Math.max(r.length,1))*i)*Math.PI/180;return{...x,x:50+37*Math.cos(angle),y:50+37*Math.sin(angle)}});
+  return<section className="constellation holo-panel" aria-label="Карта взаимоотношений"><div className="constellation-head"><div><p className="kicker">CONNECTIONS // FORCE MAP</p><h2>СЕТЬ СВЯЗЕЙ</h2></div><span><Crosshair size={13}/> {r.length} УЗЛА</span></div><div className="constellation-stage"><svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="linkGlow" x1="0" x2="1"><stop stopColor="#56bbff" stopOpacity=".12"/><stop offset=".5" stopColor="#56bbff" stopOpacity=".8"/><stop offset="1" stopColor="#ffc46b" stopOpacity=".12"/></linearGradient></defs>{nodes.map(x=><line key={`line-${x.id}`} x1="50" y1="50" x2={x.x} y2={x.y}/>)}</svg><div className="constellation-center"><Orbit size={18}/><b>СЕРА</b><small>SA-001</small></div>{nodes.map(x=><div className="constellation-node" style={{left:`${x.x}%`,top:`${x.y}%`}} key={x.id}><span>{String(x.name||'?')[0]}</span><b>{x.name}</b><small>{x.relation||x.role||'СВЯЗЬ'}</small></div>)}</div><div className="constellation-legend"><span><i className="legend-dot cyan"/> СИЛЬНЫЙ ИМПУЛЬС</span><span><i className="legend-dot amber"/> АРХИВНАЯ СВЯЗЬ</span><span><ShieldCheck size={13}/> СИГНАЛ ПОДТВЕРЖДЁН</span></div></section>;
+}
+
+function Home({c,ch,r=[],g=[]}){
   useEffect(()=>{document.title='Jedi Archives — Сера Аверн'},[]);
   if(!c)return<Page title="Архив пуст" sub="DATABASE // NO RECORD">
     <Holo className="empty"><Database/><p>В таблице character нет записи. Добавьте персонажа через админ-панель.</p></Holo>
@@ -381,6 +401,7 @@ function Home({c,ch}){
         <small>БЕЛАЯ ЗВЕЗДА // АРХИВ ХРАМА ДЖЕДАЕВ</small>
       </Holo>
     </section>
+    <SignalDashboard ch={ch} r={r} g={g}/>
     <section className="archive-updates holo-panel"><p className="kicker">ПОСЛЕДНИЕ ЗАПИСИ // LIVE FEED</p><h2>ХРОНОЛОГИЯ СИЛЫ</h2><div className="home-timeline">{ch.slice(0,4).map((x,i)=><div key={x.id}><b>{String(x.chapter_number||i+1).padStart(2,'0')}</b><span>{x.title}</span><small>ЗАПИСЬ ДОБАВЛЕНА В АРХИВ</small></div>)}</div><Link to="/history" className="btn">ОТКРЫТЬ ИСТОРИЮ <ArrowRight size={16}/></Link></section>
     <section className="cards">
       <Card icon={<Images/>} meta="VISUAL ARCHIVE // 01" title="Галерея" text="Портреты и визуальные записи из архива Ордена." to="/gallery"/>
@@ -442,7 +463,7 @@ function History({ch}){
         {visible.map((x,i)=><article id={`chapter-${x.id}`} className={`chapter ${open===i?'chapter-open':''}`} key={x.id}>
           <div className="marker">{x.chapter_number!=null?String(x.chapter_number).padStart(2,'0'):String(i+1).padStart(2,'0')}</div>
           <Holo className="chapter-panel">
-            <p className="kicker">ГЛАВА {x.chapter_number??i+1}</p>
+            <div className="chapter-stamp"><span>CHAPTER // {String(x.chapter_number??i+1).padStart(2,'0')}</span><span>{String(x.content||'').length} ЗНАКОВ</span></div><p className="kicker">ГЛАВА {x.chapter_number??i+1}</p>
             <button className="chapter-toggle" onClick={()=>setOpen(open===i?-1:i)}>{open===i?'СВЕРНУТЬ':'ОТКРЫТЬ'} ЗАПИСЬ</button>{open===i&&<span className="chapter-nav">{i>0&&<button onClick={()=>setOpen(i-1)}>← ПРЕД.</button>}{i<visible.length-1&&<button onClick={()=>setOpen(i+1)}>СЛЕД. →</button>}</span>}
             <h2>{x.title}</h2>
             <div className="section-line"/>
@@ -461,7 +482,7 @@ function Relationships({r}){
   return<Page title="Взаимоотношения" sub="ЛИЧНЫЕ СВЯЗИ // РАННИЙ ПЕРИОД">
     {r.length===0
       ?<Holo className="empty"><UserRound/><p>Записей о личных связях пока нет.</p></Holo>
-      :<div className="relations">
+      :<><RelationshipConstellation r={r}/><div className="relations">
         {r.map(x=><Holo className="relation" key={x.id}>
           {x.image_url
             ?<Frame holo={x.holo_effect!==false} className="photo"><SafeImage src={x.image_url} alt={x.name} loading="lazy"/></Frame>
@@ -473,7 +494,7 @@ function Relationships({r}){
             {x.quote&&<blockquote>«{x.quote}»</blockquote>}
           </div>
         </Holo>)}
-      </div>}
+      </div></>}
   </Page>;
 }
 
@@ -787,7 +808,7 @@ function App(){
   </Layout>;
   return<Layout error={archive.error}>
     <Routes>
-      <Route path="/" element={<Home c={archive.character} ch={archive.chapters}/>}/>
+      <Route path="/" element={<Home c={archive.character} ch={archive.chapters} r={archive.relationships} g={archive.gallery}/>}/>
       <Route path="/character" element={<Character c={archive.character}/>}/>
       <Route path="/history" element={<History ch={archive.chapters}/>}/>
       <Route path="/relationships" element={<Relationships r={archive.relationships}/>}/>
