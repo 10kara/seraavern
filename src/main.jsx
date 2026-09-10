@@ -1,8 +1,8 @@
-import React,{useEffect,useState,useRef}from'react';
+import React,{useEffect,useState,useRef,useId}from'react';
 import{createRoot}from'react-dom/client';
 import{createPortal}from'react-dom';
 import{BrowserRouter,Routes,Route,Link,NavLink,useNavigate,useLocation}from'react-router-dom';
-import{ArrowRight,BookOpen,ChevronLeft,ChevronRight,Database,Image as ImageIcon,LogIn,Menu,Shield,UserRound,X,Save,Trash2,Plus,Upload,RefreshCw,Lock,Terminal,Images,Edit3,Eye,EyeOff}from'lucide-react';
+import{ArrowRight,BookOpen,ChevronLeft,ChevronRight,Database,Image as ImageIcon,LogIn,Menu,Shield,UserRound,X,Save,Trash2,Plus,Upload,RefreshCw,Lock,Terminal,Images,Edit3,Eye,EyeOff,Download,FileJson,ExternalLink,ArrowUp,ArrowDown,ClipboardPaste,Undo2,Search,Check,AlertTriangle}from'lucide-react';
 import{createClient}from'@supabase/supabase-js';
 import'./styles.css';
 
@@ -14,6 +14,7 @@ import'./styles.css';
 const SUPA_URL=import.meta.env.VITE_SUPABASE_URL;
 const SUPA_KEY=import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY||import.meta.env.VITE_SUPABASE_ANON_KEY;
 const STORAGE_BUCKET=import.meta.env.VITE_SUPABASE_STORAGE_BUCKET||'archive';
+const ADMIN_EMAIL=import.meta.env.VITE_ADMIN_EMAIL||'';
 const supabase=SUPA_URL&&SUPA_KEY?createClient(SUPA_URL,SUPA_KEY):null;
 
 /* ============================================================
@@ -28,6 +29,47 @@ const fallbackRelations=[{id:'local-r1',name:'Рен Аверн',role:'Отец'
    ХЕЛПЕРЫ
    ============================================================ */
 const clean=v=>v===null||v===undefined||v===''?'—':v;
+
+const isEditableTarget=target=>!!target?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable=""]');
+
+// Storage URL может быть публичным URL, URL с query string или уже относительным путём.
+// Единая функция используется при удалении записей и отмене незавершённой загрузки.
+async function cleanupStorageUrl(url){
+  if(!supabase||!url)return;
+  try{
+    const marker=`/${STORAGE_BUCKET}/`;
+    const raw=String(url);
+    const at=raw.indexOf(marker);
+    const path=at>=0?decodeURIComponent(raw.slice(at+marker.length).split('?')[0]):(raw.startsWith(`${STORAGE_BUCKET}/`)?raw.slice(STORAGE_BUCKET.length+1):'');
+    if(path)await supabase.storage.from(STORAGE_BUCKET).remove([path]);
+  }catch(e){console.warn('[archive] storage cleanup:',e?.message||e)}
+}
+
+function SafeImage({src,alt='',className='',...props}){
+  const[bad,setBad]=useState(false);
+  useEffect(()=>setBad(false),[src]);
+  if(!src||bad)return<div className="image-error" role="img" aria-label="URL изображения недоступен"><AlertTriangle size={15}/> URL ИЗОБРАЖЕНИЯ НЕДОСТУПЕН</div>;
+  return<img className={className} src={src} alt={alt} onError={()=>setBad(true)} {...props}/>;
+}
+
+async function compressImage(file,max=1600,quality=.82){
+  if(!file?.type?.startsWith('image/')||typeof document==='undefined')return file;
+  try{
+    const bitmap=await createImageBitmap(file);
+    const ratio=Math.min(1,max/Math.max(bitmap.width,bitmap.height));
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round(bitmap.width*ratio));
+    canvas.height=Math.max(1,Math.round(bitmap.height*ratio));
+    canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);
+    bitmap.close?.();
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/webp',quality));
+    if(!blob)return file;
+    return new File([blob],`${file.name.replace(/\.[^.]+$/,'')}.webp`,{type:'image/webp',lastModified:Date.now()});
+  }catch{return file}
+}
+
+const formEqual=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+const draftStorageKey=(kind,id)=>`archive-draft:${kind==='relations'?'relationships':kind}:${id||'new'}`;
 
 // Правильные русские формы: 1 год, 2 года, 5 лет, 22 года, 12 лет…
 const plural=(n,one,few,many)=>{
@@ -106,7 +148,21 @@ function useArchive(){
     }catch(e){setError(e.message||'Не удалось загрузить архив.')}
     finally{setLoading(false);setLoaded(true)}
   };
-  useEffect(()=>{load()},[]);
+  useEffect(()=>{
+    load();
+    if(!supabase)return;
+    let timer=0;
+    const refresh=()=>{clearTimeout(timer);timer=setTimeout(load,120)};
+    const visible=()=>{if(document.visibilityState==='visible')refresh()};
+    window.addEventListener('focus',refresh);document.addEventListener('visibilitychange',visible);
+    const channel=supabase.channel('archive-live-updates')
+      .on('postgres_changes',{event:'*',schema:'public',table:'character'},refresh)
+      .on('postgres_changes',{event:'*',schema:'public',table:'chapters'},refresh)
+      .on('postgres_changes',{event:'*',schema:'public',table:'relationships'},refresh)
+      .on('postgres_changes',{event:'*',schema:'public',table:'gallery'},refresh)
+      .subscribe();
+    return()=>{clearTimeout(timer);window.removeEventListener('focus',refresh);document.removeEventListener('visibilitychange',visible);supabase.removeChannel(channel)};
+  },[]);
   return{character:c,chapters:ch,relationships:r,gallery:g,loading,loaded,error,reload:load,setCharacter:setC,setChapters:setCh,setRelationships:setR,setGallery:setG};
 }
 
@@ -195,7 +251,17 @@ function Layout({error='',children}){
   useEffect(()=>{
     const move=e=>{document.documentElement.style.setProperty('--mx',`${(e.clientX/window.innerWidth-.5)*2}`);document.documentElement.style.setProperty('--my',`${(e.clientY/window.innerHeight-.5)*2}`)};
     const keys=[]; const konami=['ArrowUp','ArrowUp','ArrowDown','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight'];
-    const key=e=>{keys.push(e.key);if(keys.slice(-konami.length).join()===konami.join()){setForceMode(v=>!v);keys.length=0}if(e.key.toLowerCase()==='t'){setTheme(v=>{const n=v==='jedi'?'imperial':'jedi';localStorage.setItem('archive-theme',n);return n})}};
+    const key=e=>{
+      // Шорткаты никогда не должны вмешиваться в текст, select и числовые стрелки.
+      if(isEditableTarget(e.target))return;
+      if(e.key==='t'||e.key==='T'){
+        setTheme(v=>{const n=v==='jedi'?'imperial':'jedi';localStorage.setItem('archive-theme',n);return n});
+        return;
+      }
+      if(!konami.includes(e.key)){keys.length=0;return}
+      keys.push(e.key);
+      if(keys.slice(-konami.length).join()===konami.join()){setForceMode(v=>!v);keys.length=0}
+    };
     const scroll=()=>{const d=document.documentElement;document.documentElement.style.setProperty('--read',`${Math.min(100,Math.max(0,scrollY/(d.scrollHeight-innerHeight||1)*100))}%`)};
     const click=()=>{try{const A=window.AudioContext||window.webkitAudioContext;if(!A)return;const a=new A(),o=a.createOscillator(),g=a.createGain();o.frequency.value=520;g.gain.setValueAtTime(.025,a.currentTime);g.gain.exponentialRampToValueAtTime(.001,a.currentTime+.06);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+.06)}catch{}};
     window.addEventListener('pointermove',move);window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);scroll();
@@ -232,8 +298,8 @@ function Page({title,sub,children}){
   </section>;
 }
 
-function Holo({children,className=''}){
-  return<div className={`holo-panel ${className}`}>
+function Holo({children,className='',innerRef}){
+  return<div ref={innerRef} className={`holo-panel ${className}`}>
     <i className="corner tl" aria-hidden="true"/><i className="corner br" aria-hidden="true"/>
     {children}
   </div>;
@@ -269,8 +335,8 @@ function Lightbox({items,index,onClose,onStep}){
     <button className="lb-btn lb-close" aria-label="Закрыть" onClick={onClose}><X size={20}/></button>
     {items.length>1&&<button className="lb-btn lb-prev" aria-label="Предыдущее" onClick={e=>{e.stopPropagation();onStep(-1)}}><ChevronLeft size={26}/></button>}
     <figure onClick={e=>e.stopPropagation()}>
-      <Frame holo><img src={item.src} alt={item.alt||''}/></Frame>
-      <figcaption><span>{item.caption}</span><span>{index+1} / {items.length}</span></figcaption><div className="lb-thumbs">{items.map((x,i)=><button key={i} className={i===index?'active':''} onClick={e=>{e.stopPropagation();onStep(i-index)}}><img src={x.src} alt=""/></button>)}</div>
+      <Frame holo><SafeImage src={item.src} alt={item.alt||''}/></Frame>
+      <figcaption><span>{item.caption}</span><span>{index+1} / {items.length}</span></figcaption><div className="lb-thumbs">{items.map((x,i)=><button key={i} className={i===index?'active':''} onClick={e=>{e.stopPropagation();onStep(i-index)}}><SafeImage src={x.src} alt=""/></button>)}</div>
     </figure>
     {items.length>1&&<button className="lb-btn lb-next" aria-label="Следующее" onClick={e=>{e.stopPropagation();onStep(1)}}><ChevronRight size={26}/></button>}
   </div>;
@@ -309,7 +375,7 @@ function Home({c,ch}){
       <Holo className="hero-photo">
         <Frame holo={holo} className="hero-frame">
           {c.image_url
-            ?<img src={c.image_url} alt={c.name}/>
+            ?<SafeImage src={c.image_url} alt={c.name}/>
             :<div className="placeholder"><ImageIcon/><span>ИЗОБРАЖЕНИЕ НЕ ЗАГРУЖЕНО</span></div>}
         </Frame>
         <small>БЕЛАЯ ЗВЕЗДА // АРХИВ ХРАМА ДЖЕДАЕВ</small>
@@ -335,7 +401,7 @@ function Character({c}){
         <div className="portrait">
           <Frame holo={holo} className={c.image_url?'zoomable':''}>
             {c.image_url
-              ?<img src={c.image_url} alt={c.name} onClick={()=>setLb(0)}/>
+              ?<SafeImage src={c.image_url} alt={c.name} onClick={()=>setLb(0)}/>
               :<div className="placeholder"><ImageIcon/></div>}
           </Frame>
         </div>
@@ -361,21 +427,26 @@ function Character({c}){
 }
 
 function History({ch}){
-  const[lb,setLb]=useState(-1);const[open,setOpen]=useState(0);
+  const[lb,setLb]=useState(-1);const[open,setOpen]=useState(0);const location=useLocation();
   const visible=[...ch].filter(x=>x.published!==false).sort((a,b)=>(a.chapter_number??0)-(b.chapter_number??0));
   const covers=visible.filter(x=>x.cover_image);
+  useEffect(()=>{
+    const id=new URLSearchParams(location.search).get('chapter');
+    const index=id?visible.findIndex(x=>String(x.id)===String(id)):-1;
+    if(index>=0){setOpen(index);requestAnimationFrame(()=>document.getElementById(`chapter-${id}`)?.scrollIntoView({behavior:'smooth',block:'center'}))}
+  },[location.search,visible.length]);
   return<Page title="История" sub="ХРОНОЛОГИЯ // РАННИЕ ГОДЫ">
     {visible.length===0
       ?<Holo className="empty"><BookOpen/><p>Опубликованных глав пока нет. Добавьте их через админ-панель.</p></Holo>
       :<div className="timeline">
-        {visible.map((x,i)=><article className={`chapter ${open===i?'chapter-open':''}`} key={x.id}>
+        {visible.map((x,i)=><article id={`chapter-${x.id}`} className={`chapter ${open===i?'chapter-open':''}`} key={x.id}>
           <div className="marker">{x.chapter_number!=null?String(x.chapter_number).padStart(2,'0'):String(i+1).padStart(2,'0')}</div>
           <Holo className="chapter-panel">
             <p className="kicker">ГЛАВА {x.chapter_number??i+1}</p>
             <button className="chapter-toggle" onClick={()=>setOpen(open===i?-1:i)}>{open===i?'СВЕРНУТЬ':'ОТКРЫТЬ'} ЗАПИСЬ</button>{open===i&&<span className="chapter-nav">{i>0&&<button onClick={()=>setOpen(i-1)}>← ПРЕД.</button>}{i<visible.length-1&&<button onClick={()=>setOpen(i+1)}>СЛЕД. →</button>}</span>}
             <h2>{x.title}</h2>
             <div className="section-line"/>
-            {x.cover_image&&<Frame holo={x.holo_effect!==false} className="cover zoomable" onClick={()=>setLb(covers.findIndex(cv=>cv.id===x.id))}><img src={x.cover_image} alt={x.title||''} loading="lazy"/></Frame>}
+            {x.cover_image&&<Frame holo={x.holo_effect!==false} className="cover zoomable" onClick={()=>setLb(covers.findIndex(cv=>cv.id===x.id))}><SafeImage src={x.cover_image} alt={x.title||''} loading="lazy"/></Frame>}
             {String(x.content||'').split(/\n+/).filter(Boolean).map((p,j)=><p key={j}>{p}</p>)}
           </Holo>
         </article>)}
@@ -393,7 +464,7 @@ function Relationships({r}){
       :<div className="relations">
         {r.map(x=><Holo className="relation" key={x.id}>
           {x.image_url
-            ?<Frame holo={x.holo_effect!==false} className="photo"><img src={x.image_url} alt={x.name} loading="lazy"/></Frame>
+            ?<Frame holo={x.holo_effect!==false} className="photo"><SafeImage src={x.image_url} alt={x.name} loading="lazy"/></Frame>
             :<div className="avatar">{String(x.name||'?')[0]}</div>}
           <div>
             <p className="kicker">{x.role}</p>
@@ -419,7 +490,7 @@ function Gallery({c,gallery}){
       ?<Holo className="empty"><Images/><p>Изображения появятся здесь после загрузки.</p></Holo>
       :<><div className="gallery-filters"><button className={filter==='all'?'active':''} onClick={()=>setFilter('all')}>ВСЕ</button><button className={filter==='portrait'?'active':''} onClick={()=>setFilter('portrait')}>ПОРТРЕТЫ</button><button className={filter==='archive'?'active':''} onClick={()=>setFilter('archive')}>АРХИВ</button></div><div className="gallery">
         {items.map((x,i)=><figure className="holo-panel g-item" key={x.id} onClick={()=>setLb(i)}>
-          <Frame holo={x.holo_effect!==false}><img src={x.image_url||x.url} alt={x.caption||x.title||'Архивный снимок'} loading="lazy"/></Frame>
+          <Frame holo={x.holo_effect!==false}><SafeImage src={x.image_url||x.url} alt={x.caption||x.title||'Архивный снимок'} loading="lazy"/></Frame>
           <span className="zoom"><ImageIcon size={16}/></span>
           <figcaption>{x.caption||x.title||'АРХИВНЫЙ МАТЕРИАЛ'}</figcaption>
         </figure>)}
@@ -433,7 +504,7 @@ function Gallery({c,gallery}){
    ============================================================ */
 function AdminLogin(){
   const nav=useNavigate();
-  const[email,setEmail]=useState(''),[password,setPassword]=useState(''),[err,setErr]=useState(''),[busy,setBusy]=useState(false);
+  const[email,setEmail]=useState(ADMIN_EMAIL),[password,setPassword]=useState(''),[err,setErr]=useState(''),[busy,setBusy]=useState(false),[showPassword,setShowPassword]=useState(false);
   // Уже авторизованы — сразу в панель.
   useEffect(()=>{if(supabase)supabase.auth.getSession().then(({data})=>{if(data.session)nav('/admin/panel',{replace:true})})},[nav]);
   const login=async e=>{
@@ -453,8 +524,8 @@ function AdminLogin(){
       <h2>ЗАКРЫТЫЙ АРХИВ</h2>
       <p>Доступ к редактированию базы разрешён только авторизованному пользователю.</p>
       <form onSubmit={login}>
-        <label>ЛОГИН<input value={email} onChange={e=>setEmail(e.target.value)} placeholder="tenkara" autoComplete="username" required/></label>
-        <label>ПАРОЛЬ<input type="password" value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" required/></label>
+        <label htmlFor="admin-email">ЛОГИН<input id="admin-email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="tenkara" autoComplete="username" autoFocus required/></label>
+        <label htmlFor="admin-password">ПАРОЛЬ<div className="password-field"><input id="admin-password" type={showPassword?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} autoComplete="current-password" required/><button type="button" className="password-toggle" onClick={()=>setShowPassword(v=>!v)} aria-label={showPassword?'Скрыть пароль':'Показать пароль'}>{showPassword?<EyeOff size={15}/>:<Eye size={15}/>}</button></div></label>
         <button className="btn" disabled={busy}><LogIn size={17}/> {busy?'ПРОВЕРКА…':'ВОЙТИ В АРХИВ'}</button>
         {err&&<em>{err}</em>}
       </form>
@@ -478,364 +549,231 @@ function AdminGuard({children}){
    АДМИНКА — ПАНЕЛЬ УПРАВЛЕНИЯ
    ============================================================ */
 const EMPTY_CHARACTER={name:'',species:'',age:'',height:'',homeworld:'',status:'',callsign:'',summary:'',appearance:'',personality:'',preferences:'',dislikes:'',motivation:'',image_url:'',holo_effect:true};
-const EMPTY_CHAPTER={id:null,chapter_number:'',title:'',content:'',cover_image:'',published:true};
+const EMPTY_CHAPTER={id:null,chapter_number:'',title:'',content:'',cover_image:'',published:true,holo_effect:true};
 const EMPTY_RELATION={id:null,name:'',role:'',relation:'',quote:'',image_url:'',holo_effect:true};
 const EMPTY_GALLERY={id:null,title:'',caption:'',image_url:'',sort_order:0,holo_effect:true};
 
+function ImagePicker({folder,onSelect,onClose}){
+  const[items,setItems]=useState([]),[busy,setBusy]=useState(true),[error,setError]=useState('');
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      if(!supabase){setBusy(false);return}
+      const{data,error}=await supabase.storage.from(STORAGE_BUCKET).list(folder,{limit:100,sortBy:{column:'created_at',order:'desc'}});
+      if(!alive)return;
+      if(error)setError(error.message);else setItems((data||[]).filter(x=>x.name).map(x=>({name:x.name,url:supabase.storage.from(STORAGE_BUCKET).getPublicUrl(`${folder}/${x.name}`).data.publicUrl})));
+      setBusy(false);
+    })();
+    return()=>{alive=false};
+  },[folder]);
+  return<PortalOverlay onClose={onClose}>
+    <div className="picker holo-panel" role="dialog" aria-modal="true" aria-label="Выбрать загруженное изображение">
+      <div className="picker-head"><div><p className="kicker">STORAGE // {folder.toUpperCase()}</p><h2>ВЫБРАТЬ ИЗ ЗАГРУЖЕННЫХ</h2></div><button className="ghost" onClick={onClose} aria-label="Закрыть"><X size={16}/></button></div>
+      {busy&&<div className="loading">СКАНИРОВАНИЕ BUCKET…</div>}
+      {error&&<div className="inline-error">{error}</div>}
+      {!busy&&!error&&!items.length&&<div className="empty slim"><Images/><p>В этой папке пока нет изображений.</p></div>}
+      <div className="picker-grid">{items.map(x=><button type="button" className="picker-item" key={x.name} onClick={()=>{onSelect(x.url);onClose()}}><SafeImage src={x.url} alt={x.name}/><small>{x.name}</small></button>)}</div>
+    </div>
+  </PortalOverlay>;
+}
+function PortalOverlay({children,onClose}){return createPortal(<div className="modal-backdrop" onMouseDown={onClose}>{<div onMouseDown={e=>e.stopPropagation()}>{children}</div>}</div>,document.body)}
+function UploadField({value,onChange,folder,formKey,onUpload}){
+  const[pick,setPick]=useState(false),[drag,setDrag]=useState(false);
+  const choose=file=>file&&onUpload(file,folder,onChange,formKey,value);
+  const drop=e=>{e.preventDefault();setDrag(false);choose(e.dataTransfer.files?.[0])};
+  const paste=e=>{const file=[...(e.clipboardData?.files||[])].find(x=>x.type.startsWith('image/'));if(file){e.preventDefault();choose(file)}};
+  return<>
+    <div className={`upload ${drag?'drag-active':''}`} tabIndex="0" onDrop={drop} onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onPaste={paste}>
+      <input value={value||''} onChange={e=>onChange(e.target.value)} placeholder="URL изображения"/>
+      <div className="upload-buttons"><button type="button" className="upload-btn" onClick={()=>setPick(true)}><Images size={14}/> ВЫБРАТЬ</button><label className="upload-btn"><Upload size={14}/> ЗАГРУЗИТЬ<input type="file" accept="image/*" onChange={e=>{choose(e.target.files?.[0]);e.target.value=''}}/></label></div>
+      <small className="drop-hint"><ClipboardPaste size={12}/> Вставьте из буфера или перетащите файл сюда</small>
+    </div>
+    {pick&&<ImagePicker folder={folder} onSelect={onChange} onClose={()=>setPick(false)}/>}
+  </>;
+}
+function ChapterPreview({chapter}){
+  const text=String(chapter.content||'');
+  return<div className="chapter-preview holo-panel"><div className="preview-head"><span className="kicker">LIVE PREVIEW // {text.length} ЗНАКОВ</span><small>Пустая строка = новый абзац</small></div><h3>{chapter.title||'Без названия'}</h3><div className="section-line"/>{text.split(/\n+/).filter(Boolean).map((x,i)=><p key={i}>{x}</p>)}{!text&&<p className="muted">Предпросмотр появится здесь после ввода текста.</p>}</div>;
+}
+function DraftBanner({info,onRestore,onDelete}){if(!info)return null;return<div className="draft-banner" role="status"><AlertTriangle size={15}/><span>Найден несохранённый черновик от {new Date(info.savedAt).toLocaleString('ru-RU')}</span><button className="ghost" onClick={onRestore}>ВОССТАНОВИТЬ</button><button className="ghost" onClick={onDelete}>УДАЛИТЬ</button></div>}
+function SaveBar({dirty,onSave}){return<div className={`save-bar ${dirty?'is-dirty':''}`}><span><span className="save-indicator">●</span>{dirty?'Есть несохранённые изменения':'Все изменения сохранены'}</span>{dirty&&<button type="button" className="ghost" onClick={onSave}><Save size={14}/> СОХРАНИТЬ</button>}</div>}
+
+const CHAR_FIELDS=['name','species','age','height','homeworld','status','callsign','summary','appearance','personality','preferences','dislikes','motivation','image_url','holo_effect'];
+const CH_FIELDS=['chapter_number','title','content','cover_image','published','holo_effect'];
+const REL_FIELDS=['name','role','relation','quote','image_url','holo_effect'];
+const GAL_FIELDS=['title','caption','image_url','sort_order','holo_effect'];
+const only=(x,fields)=>fields.reduce((o,k)=>(o[k]=x?.[k]??(k==='holo_effect'?true:''),o),{});
+
 function AdminPanel({archive}){
   const{character,chapters,relationships,gallery,reload}=archive;
-  const nav=useNavigate();
-  const[tab,setTab]=useState('character');
-  const[busy,setBusy]=useState(false);
-  const[msg,setMsg]=useState(null); // {text,kind:'ok'|'err'}
+  const nav=useNavigate(),location=useLocation();
+  const initialTab=new URLSearchParams(location.search).get('tab');
+  const[tab,setTab]=useState(['character','chapters','relations','gallery'].includes(initialTab)?initialTab:'character');
+  const[busy,setBusy]=useState(false),[msg,setMsg]=useState(null),[confirmState,setConfirmState]=useState(null),[pendingTab,setPendingTab]=useState('');
   const[form,setForm]=useState({...EMPTY_CHARACTER});
-  const[chForm,setChForm]=useState(EMPTY_CHAPTER);
-  const[relForm,setRelForm]=useState(EMPTY_RELATION);
-  const[galForm,setGalForm]=useState(EMPTY_GALLERY);
+  const[chForm,setChForm]=useState({...EMPTY_CHAPTER});
+  const[relForm,setRelForm]=useState({...EMPTY_RELATION});
+  const[galForm,setGalForm]=useState({...EMPTY_GALLERY});
   const[userEmail,setUserEmail]=useState('');
-  const lastChar=useRef('');
+  const[search,setSearch]=useState({chapters:'',relations:'',gallery:''});
+  const[visibility,setVisibility]=useState('all');
+  const[noPhoto,setNoPhoto]=useState(false);
+  const[editTarget,setEditTarget]=useState(null),[dragGallery,setDragGallery]=useState(null);
+  const[serverDrafts,setServerDrafts]=useState({}),[draftsReady,setDraftsReady]=useState(false),dismissedDrafts=useRef(new Set());
+  const[pendingUploads]=useState(()=>new Map()),editorRef=useRef(null),listRef=useRef(null);
 
   useEffect(()=>{if(supabase)supabase.auth.getUser().then(({data})=>setUserEmail(data.user?.email||''))},[]);
-  // Синхронизируем форму с базой, но не затираем правки при фоновых обновлениях.
+  useEffect(()=>{const t=new URLSearchParams(location.search).get('tab');if(t&&['character','chapters','relations','gallery'].includes(t))setTab(t)},[location.search]);
   useEffect(()=>{
-    const sig=character?JSON.stringify(character):'none';
-    if(sig===lastChar.current)return;
-    lastChar.current=sig;
-    setForm(character?{...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER});
-  },[character]);
-  useEffect(()=>{
-    if(!msg)return;
-    const t=setTimeout(()=>setMsg(null),4500);
-    return()=>clearTimeout(t);
-  },[msg]);
+    const found={};
+    ['character','chapters','relations','gallery'].forEach(kind=>{
+      const prefix=`archive-draft:${kind==='relations'?'relationships':kind}:`;
+      for(let i=0;i<localStorage.length;i++){
+        const key=localStorage.key(i);if(!key?.startsWith(prefix))continue;
+        try{const x=JSON.parse(localStorage.getItem(key)||'null');if(x?.data&&x.savedAt)found[key]=x}catch{}
+      }
+    });
+    setServerDrafts(found);setDraftsReady(true);
+  },[]);
+  const characterBase=character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER};
+  const chapterBase=chForm.id?({...EMPTY_CHAPTER,...(chapters.find(x=>x.id===chForm.id)||{}),holo_effect:chapters.find(x=>x.id===chForm.id)?.holo_effect!==false}):EMPTY_CHAPTER;
+  const relationBase=relForm.id?({...EMPTY_RELATION,...(relationships.find(x=>x.id===relForm.id)||{}),holo_effect:relationships.find(x=>x.id===relForm.id)?.holo_effect!==false}):EMPTY_RELATION;
+  const galleryBase=galForm.id?({...EMPTY_GALLERY,...(gallery.find(x=>x.id===galForm.id)||{}),holo_effect:gallery.find(x=>x.id===galForm.id)?.holo_effect!==false}):EMPTY_GALLERY;
+  const dirty={character:!formEqual(only(form,CHAR_FIELDS),only(characterBase,CHAR_FIELDS)),chapters:!formEqual(only(chForm,CH_FIELDS),only(chapterBase,CH_FIELDS)),relations:!formEqual(only(relForm,REL_FIELDS),only(relationBase,REL_FIELDS)),gallery:!formEqual(only(galForm,GAL_FIELDS),only(galleryBase,GAL_FIELDS))};
+  const anyDirty=Object.values(dirty).some(Boolean);
 
-  const notify=(text,kind='ok')=>setMsg({text,kind});
+  // Внешний reload не стирает начатое редактирование персонажа.
+  useEffect(()=>{if(!dirty.character)setForm(character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER})},[character]);
+  useEffect(()=>{
+    if(!draftsReady)return;
+    const timers=[];
+    const all={character:form,chapters:chForm,relations:relForm,gallery:galForm};
+    Object.entries(all).forEach(([key,data])=>{
+      if(!dirty[key])return;
+      timers.push(setTimeout(()=>{const storageKey=draftStorageKey(key,data.id||formId(key));const record={savedAt:Date.now(),data};localStorage.setItem(storageKey,JSON.stringify(record));setServerDrafts(x=>({...x,[storageKey]:record}))},1000));
+    });
+    return()=>timers.forEach(clearTimeout);
+  },[form,chForm,relForm,galForm,draftsReady,dirty.character,dirty.chapters,dirty.relations,dirty.gallery]);
+  useEffect(()=>{
+    const before=e=>{if(anyDirty){e.preventDefault();e.returnValue='Есть несохранённые изменения.'}};
+    window.addEventListener('beforeunload',before);return()=>window.removeEventListener('beforeunload',before);
+  },[anyDirty]);
+  useEffect(()=>{
+    const guard=e=>{
+      if(!anyDirty)return;
+      const link=e.target.closest?.('a[href]');
+      const href=link?.getAttribute('href');
+      if(!href||!href.startsWith('/')||href.startsWith('/admin'))return;
+      e.preventDefault();e.stopPropagation();
+      const target=href.startsWith(basename)?(href.slice(basename.length)||'/'):href;
+      setConfirmState({label:'В форме есть несохранённые изменения. Покинуть редактор?',action:()=>{resetActive();nav(target)}});
+    };
+    document.addEventListener('click',guard,true);return()=>document.removeEventListener('click',guard,true);
+  },[anyDirty,nav]);
+  useEffect(()=>{
+    const key=e=>{
+      if(e.ctrlKey&&e.key.toLowerCase()==='s'){e.preventDefault();document.querySelector('.editor form')?.requestSubmit()}
+      if(e.key==='Escape'&&!isEditableTarget(e.target)&&anyDirty)resetActive();
+    };
+    window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);
+  },[anyDirty,tab]);
+  useEffect(()=>{if(msg?.kind==='ok'){const t=setTimeout(()=>setMsg(null),msg.undo?7000:4500);return()=>clearTimeout(t)}},[msg]);
+
+  const notify=(text,kind='ok',detail='',undo)=>setMsg({text,kind,detail,undo});
   const run=async(fn,success)=>{
     setBusy(true);
-    try{
-      const{error}=await fn();
-      if(error)throw error;
-      notify(success);
-      await reload();
-      return true;
-    }catch(e){notify('Ошибка: '+(e.message||e),'err');return false}
+    try{const res=await fn();if(res?.error)throw res.error;if(Array.isArray(res?.data)&&res.data.length===0)throw new Error('Запись не найдена или изменение заблокировано RLS.');notify(success);await reload();return res||true}
+    catch(e){notify('Ошибка: '+(e.message||e),'err',e.message||String(e));return false}
     finally{setBusy(false)}
   };
-
-  /* --- Персонаж --- */
-  const saveCharacter=async e=>{
-    e.preventDefault();
-    if(!supabase){notify('Supabase не подключён. Проверьте .env.','err');return}
-    const name=String(form.name||'').trim();
-    const payload={
-      name,
-      first_name:name.split(/\s+/)[0]||'',
-      last_name:name.split(/\s+/).slice(1).join(' '),
-      species:form.species||'',
-      age:Number(form.age)||0,
-      height:Number(form.height)||0,
-      homeworld:form.homeworld||'',
-      status:form.status||'',
-      callsign:form.callsign||'',
-      summary:form.summary||'',
-      appearance:form.appearance||'',
-      personality:form.personality||'',
-      preferences:form.preferences||'',
-      dislikes:form.dislikes||'',
-      motivation:form.motivation||'',
-      image_url:form.image_url||'',
-      holo_effect:form.holo_effect!==false,
-    };
-    return run(async()=>{
-      const res=await writeResilient(
-        p=>character?.id
-          ?supabase.from('character').update(p).eq('id',character.id).select()
-          :supabase.from('character').insert(p).select(),
-        payload
-      );
-      if(res.error)throw res.error;
-      if(!res.data?.length)throw new Error('Запись character не найдена или изменение заблокировано RLS.');
-    },'Данные персонажа сохранены в Supabase.');
-  };
-
-  /* --- Главы --- */
-  const saveChapter=async e=>{
-    e.preventDefault();
-    const payload={
-      chapter_number:Number(chForm.chapter_number)||0,
-      title:chForm.title||'',
-      content:chForm.content||'',
-      cover_image:chForm.cover_image||'',
-      published:!!chForm.published,
-    };
-    const ok=await run(()=>writeResilient(
-      p=>chForm.id?supabase.from('chapters').update(p).eq('id',chForm.id):supabase.from('chapters').insert(p),
-      payload
-    ),chForm.id?'Глава обновлена.':'Глава добавлена.');
-    if(ok&&!chForm.id)setChForm({...EMPTY_CHAPTER});
-  };
-  const togglePublish=x=>run(
-    ()=>supabase.from('chapters').update({published:!(x.published!==false)}).eq('id',x.id),
-    x.published!==false?'Глава скрыта из истории.':'Глава снова опубликована.'
-  );
-
-  /* --- Связи --- */
-  const saveRelation=async e=>{
-    e.preventDefault();
-    const payload={
-      name:relForm.name||'',
-      role:relForm.role||'',
-      relation:relForm.relation||'',
-      quote:relForm.quote||'',
-      image_url:relForm.image_url||'',
-      holo_effect:relForm.holo_effect!==false,
-    };
-    const ok=await run(()=>writeResilient(
-      p=>relForm.id?supabase.from('relationships').update(p).eq('id',relForm.id):supabase.from('relationships').insert(p),
-      payload
-    ),relForm.id?'Связь обновлена.':'Связь добавлена.');
-    if(ok&&!relForm.id)setRelForm({...EMPTY_RELATION});
-  };
-
-  /* --- Галерея --- */
-  const saveGallery=async e=>{
-    e.preventDefault();
-    const payload={
-      title:galForm.title||'',
-      caption:galForm.caption||'',
-      image_url:galForm.image_url||'',
-      sort_order:Number(galForm.sort_order)||0,
-      holo_effect:galForm.holo_effect!==false,
-    };
-    const ok=await run(()=>writeResilient(
-      p=>galForm.id?supabase.from('gallery').update(p).eq('id',galForm.id):supabase.from('gallery').insert(p),
-      payload
-    ),galForm.id?'Изображение обновлено.':'Изображение добавлено.');
-    if(ok&&!galForm.id)setGalForm({...EMPTY_GALLERY});
-  };
-  const deleteGallery=async item=>{
-    if(!confirm('Удалить изображение?'))return;
-    setBusy(true);
-    try{
-      const path=item.image_url?.split('/'+STORAGE_BUCKET+'/')[1];
-      if(path)await supabase.storage.from(STORAGE_BUCKET).remove([path]).catch(()=>{});
-      const{error}=await supabase.from('gallery').delete().eq('id',item.id);
-      if(error)throw error;
-      notify('Изображение удалено.');
-      await reload();
-    }catch(e){notify('Ошибка удаления: '+(e.message||e),'err')}
-    finally{setBusy(false)}
-  };
-
-  /* --- Общее --- */
-  const remove=(table,id,label)=>{if(!confirm(`Удалить ${label}?`))return;return run(()=>supabase.from(table).delete().eq('id',id),`${label[0].toUpperCase()+label.slice(1)} удалена.`)};
-  const uploadFile=async(file,folder='archive')=>{
-    const ext=file.name.split('.').pop()?.toLowerCase()||'jpg';
-    const path=`${folder||'archive'}/${Date.now()}.${ext}`;
-    const up=await supabase.storage.from(STORAGE_BUCKET).upload(path,file,{upsert:false,contentType:file.type});
+  const formId=key=>key==='character'?character?.id:(key==='chapters'?chForm.id:key==='relations'?relForm.id:galForm.id);
+  const currentDraftKey=key=>draftStorageKey(key,formId(key));
+  const clearDraft=key=>{const storageKey=currentDraftKey(key);localStorage.removeItem(storageKey);dismissedDrafts.current.delete(storageKey);setServerDrafts(x=>{const n={...x};delete n[storageKey];return n})};
+  const draft=key=>{const storageKey=currentDraftKey(key);return serverDrafts[storageKey]&&!dismissedDrafts.current.has(storageKey)?serverDrafts[storageKey]:null};
+  const restoreDraft=key=>{const storageKey=currentDraftKey(key),data=serverDrafts[storageKey]?.data;if(!data)return;dismissedDrafts.current.add(storageKey);if(key==='character')setForm({...EMPTY_CHARACTER,...data});if(key==='chapters')setChForm({...EMPTY_CHAPTER,...data});if(key==='relations')setRelForm({...EMPTY_RELATION,...data});if(key==='gallery')setGalForm({...EMPTY_GALLERY,...data});setTab(key);nav(`/admin/panel?tab=${key}`,{replace:true})};
+  const removeDraft=key=>{const storageKey=currentDraftKey(key);clearDraft(key);dismissedDrafts.current.add(storageKey)};
+  const requestConfirm=(label,action)=>setConfirmState({label,action});
+  const acceptConfirm=async()=>{const x=confirmState;setConfirmState(null);await x?.action?.()};
+  const switchTab=next=>{if(next===tab)return;if(dirty[tab]){setPendingTab(next);requestConfirm('В форме есть несохранённые изменения. Перейти и потерять их?',()=>{resetActive();setTab(next);nav(`/admin/panel?tab=${next}`,{replace:true});setPendingTab('')})}else{setTab(next);nav(`/admin/panel?tab=${next}`,{replace:true})}};
+  const rememberUpload=(key,url)=>{if(!pendingUploads.has(key))pendingUploads.set(key,new Set());pendingUploads.get(key).add(url)};
+  const forgetUpload=(key,url)=>{pendingUploads.get(key)?.delete(url)};
+  const cancelUploads=key=>{const urls=[...(pendingUploads.get(key)||[])];pendingUploads.delete(key);urls.forEach(cleanupStorageUrl)};
+  const uploadFile=async(file,folder)=>{
+    const compressed=await compressImage(file);
+    const ext=compressed.type==='image/webp'?'webp':(compressed.name.split('.').pop()?.toLowerCase()||'jpg');
+    const path=`${folder}/${Date.now()}-${Math.random().toString(36).slice(2,7)}.${ext}`;
+    const up=await supabase.storage.from(STORAGE_BUCKET).upload(path,compressed,{upsert:false,contentType:compressed.type||file.type});
     if(up.error)throw up.error;
     return supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path).data.publicUrl;
   };
-  const upload=async(e,folder,apply)=>{
-    const file=e.target.files?.[0];
-    e.target.value='';
-    if(!file)return;
-    setBusy(true);
-    try{const url=await uploadFile(file,folder);apply(url);notify('Файл загружен в Storage. Нажмите «Сохранить».')}
-    catch(err){notify('Ошибка Storage: '+(err.message||err),'err')}
-    finally{setBusy(false)}
-  };
-  const logout=async()=>{await supabase.auth.signOut();nav('/admin')};
-  const resetChapter=()=>setChForm({...EMPTY_CHAPTER});
-  const resetRelation=()=>setRelForm({...EMPTY_RELATION});
-  const resetGallery=()=>setGalForm({...EMPTY_GALLERY});
+  const handleUpload=async(file,folder,apply,key,oldUrl)=>{
+    setBusy(true);try{const url=await uploadFile(file,folder);if(oldUrl&&pendingUploads.get(key)?.has(oldUrl)){forgetUpload(key,oldUrl);cleanupStorageUrl(oldUrl)}rememberUpload(key,url);apply(url);notify('Файл сжат и загружен в Storage. Нажмите «Сохранить».')}catch(e){notify('Ошибка Storage: '+(e.message||e),'err',e.message||String(e))}finally{setBusy(false)}};
+  const finishUpload=(key,currentUrl)=>{const urls=[...(pendingUploads.get(key)||[])];urls.filter(x=>x!==currentUrl).forEach(cleanupStorageUrl);pendingUploads.delete(key)};
+  const saveAndCleanupOld=(oldUrl,newUrl)=>{if(oldUrl&&oldUrl!==newUrl)cleanupStorageUrl(oldUrl)};
+
+  const saveCharacter=async e=>{e.preventDefault();if(!supabase)return notify('Supabase не подключён. Проверьте .env.','err');const name=String(form.name||'').trim();const payload={name,first_name:name.split(/\s+/)[0]||'',last_name:name.split(/\s+/).slice(1).join(' '),species:form.species||'',age:Number(form.age)||0,height:Number(form.height)||0,homeworld:form.homeworld||'',status:form.status||'',callsign:form.callsign||'',summary:form.summary||'',appearance:form.appearance||'',personality:form.personality||'',preferences:form.preferences||'',dislikes:form.dislikes||'',motivation:form.motivation||'',image_url:form.image_url||'',holo_effect:form.holo_effect!==false};const old=character?.image_url;const res=await run(()=>writeResilient(p=>character?.id?supabase.from('character').update(p).eq('id',character.id).select():supabase.from('character').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Запись character не найдена или изменение заблокировано RLS.');return x}), 'Данные персонажа сохранены в Supabase.');if(res){saveAndCleanupOld(old,payload.image_url);finishUpload('character',payload.image_url);clearDraft('character')}};
+  const nextChapterNumber=Math.max(0,...chapters.map(x=>Number(x.chapter_number)||0))+1;
+  const duplicateChapter=!!chForm.chapter_number&&chapters.some(x=>Number(x.chapter_number)===Number(chForm.chapter_number)&&x.id!==chForm.id);
+  const saveChapter=async e=>{e.preventDefault();const number=Number(chForm.chapter_number)||nextChapterNumber;if(duplicateChapter)return notify(`Номер главы ${number} уже используется. Выберите другой.`,`err`);const payload={chapter_number:number,title:chForm.title||'',content:chForm.content||'',cover_image:chForm.cover_image||'',published:!!chForm.published,holo_effect:chForm.holo_effect!==false};const old=chapters.find(x=>x.id===chForm.id);const res=await run(()=>writeResilient(p=>chForm.id?supabase.from('chapters').update(p).eq('id',chForm.id).select():supabase.from('chapters').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Глава не найдена или изменение заблокировано RLS.');return x}),chForm.id?'Глава обновлена.':'Глава добавлена.');if(res){saveAndCleanupOld(old?.cover_image,payload.cover_image);finishUpload('chapters',payload.cover_image);clearDraft('chapters');if(!chForm.id)setChForm({...EMPTY_CHAPTER})}};
+  const togglePublish=x=>run(()=>supabase.from('chapters').update({published:!(x.published!==false)}).eq('id',x.id).select().then(r=>{if(r.error)throw r.error;if(!r.data?.length)throw new Error('Глава не найдена или изменение заблокировано RLS.');return r}),x.published!==false?'Глава скрыта из истории.':'Глава снова опубликована.');
+  const saveRelation=async e=>{e.preventDefault();const payload={name:relForm.name||'',role:relForm.role||'',relation:relForm.relation||'',quote:relForm.quote||'',image_url:relForm.image_url||'',holo_effect:relForm.holo_effect!==false};const old=relationships.find(x=>x.id===relForm.id);const res=await run(()=>writeResilient(p=>relForm.id?supabase.from('relationships').update(p).eq('id',relForm.id).select():supabase.from('relationships').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Связь не найдена или изменение заблокировано RLS.');return x}),relForm.id?'Связь обновлена.':'Связь добавлена.');if(res){saveAndCleanupOld(old?.image_url,payload.image_url);finishUpload('relations',payload.image_url);clearDraft('relations');if(!relForm.id)setRelForm({...EMPTY_RELATION})}};
+  const saveGallery=async e=>{e.preventDefault();const payload={title:galForm.title||'',caption:galForm.caption||'',image_url:galForm.image_url||'',sort_order:Number(galForm.sort_order)||0,holo_effect:galForm.holo_effect!==false};const old=gallery.find(x=>x.id===galForm.id);const res=await run(()=>writeResilient(p=>galForm.id?supabase.from('gallery').update(p).eq('id',galForm.id).select():supabase.from('gallery').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Изображение не найдено или изменение заблокировано RLS.');return x}),galForm.id?'Изображение обновлено.':'Изображение добавлено.');if(res){saveAndCleanupOld(old?.image_url,payload.image_url);finishUpload('gallery',payload.image_url);clearDraft('gallery');if(!galForm.id)setGalForm({...EMPTY_GALLERY})}};
+
+  const remove=(table,id,label,item)=>requestConfirm(`Точно удалить ${label}? Данные можно вернуть в течение нескольких секунд.`,async()=>{const res=await run(()=>supabase.from(table).delete().eq('id',id).select(),`${label[0].toUpperCase()+label.slice(1)} удалена.`);if(res){const timer=setTimeout(()=>cleanupStorageUrl(item?.image_url||item?.cover_image),7000);notify(`${label[0].toUpperCase()+label.slice(1)} удалена.`, 'ok','',async()=>{clearTimeout(timer);const restored={...item};delete restored.created_at;const back=await run(()=>supabase.from(table).insert(restored).select(),`${label[0].toUpperCase()+label.slice(1)} восстановлена.`);if(back)await reload()})}});
+  const moveGallery=async(id,direction)=>{const list=[...gallery].sort((a,b)=>(a.sort_order??0)-(b.sort_order??0));const i=list.findIndex(x=>x.id===id),j=i+direction;if(i<0||j<0||j>=list.length)return;const a=list[i],b=list[j];setBusy(true);try{const results=await Promise.all([supabase.from('gallery').update({sort_order:b.sort_order??j}).eq('id',a.id).select(),supabase.from('gallery').update({sort_order:a.sort_order??i}).eq('id',b.id).select()]);const bad=results.find(x=>x.error||!x.data?.length);if(bad)throw bad.error||new Error('Порядок галереи не изменён.');notify('Порядок галереи обновлён.');await reload()}catch(e){notify('Ошибка сортировки: '+(e.message||e),'err',e.message||String(e))}finally{setBusy(false)}};
+  const reorderGallery=async(id,targetId)=>{const list=[...gallery].sort((a,b)=>(a.sort_order??0)-(b.sort_order??0));const from=list.findIndex(x=>x.id===id),to=list.findIndex(x=>x.id===targetId);if(from<0||to<0||from===to)return;const moved=list.splice(from,1)[0];list.splice(to,0,moved);const changed=list.filter((x,i)=>x.sort_order!==i);setBusy(true);try{const results=await Promise.all(changed.map((x,i)=>supabase.from('gallery').update({sort_order:i}).eq('id',x.id).select()));const bad=results.find(x=>x.error||!x.data?.length);if(bad)throw bad.error||new Error('Порядок галереи не изменён.');notify('Порядок галереи обновлён.');await reload()}catch(e){notify('Ошибка сортировки: '+(e.message||e),'err',e.message||String(e))}finally{setBusy(false)}};
+  const resetCharacter=()=>{cancelUploads('character');setForm(character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER});clearDraft('character');};
+  const resetChapter=()=>{cancelUploads('chapters');setChForm({...EMPTY_CHAPTER});clearDraft('chapters');setEditTarget(null)};
+  const resetRelation=()=>{cancelUploads('relations');setRelForm({...EMPTY_RELATION});clearDraft('relations');setEditTarget(null)};
+  const resetGallery=()=>{cancelUploads('gallery');setGalForm({...EMPTY_GALLERY});clearDraft('gallery');setEditTarget(null)};
+  const resetActive=()=>tab==='character'?resetCharacter():tab==='chapters'?resetChapter():tab==='relations'?resetRelation():resetGallery();
+  const editChapter=x=>{setChForm({id:x.id,chapter_number:x.chapter_number??'',title:x.title||'',content:x.content||'',cover_image:x.cover_image||'',published:x.published!==false,holo_effect:x.holo_effect!==false});setEditTarget(x.id);requestAnimationFrame(()=>editorRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))};
+  const editRelation=x=>{setRelForm({id:x.id,name:x.name||'',role:x.role||'',relation:x.relation||'',quote:x.quote||'',image_url:x.image_url||'',holo_effect:x.holo_effect!==false});setEditTarget(x.id);requestAnimationFrame(()=>editorRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))};
+  const editGallery=x=>{setGalForm({id:x.id,title:x.title||'',caption:x.caption||x.description||'',image_url:x.image_url||'',sort_order:x.sort_order??0,holo_effect:x.holo_effect!==false});setEditTarget(x.id);requestAnimationFrame(()=>editorRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))};
+  const goList=()=>listRef.current?.scrollIntoView({behavior:'smooth',block:'start'});
+  const exportData=()=>{const data={exportedAt:new Date().toISOString(),character:character?[character]:[],chapters,relationships, gallery};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`archive-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href);notify('JSON-резервная копия скачана.')};
+  const importData=async e=>{const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const data=JSON.parse(await file.text());const tables=[['chapters',data.chapters],['relationships',data.relationships],['gallery',data.gallery]];if(data.character?.length)tables.unshift(['character',data.character]);for(const [table,rows] of tables){if(!Array.isArray(rows)||!rows.length)continue;const r=await supabase.from(table).upsert(rows);if(r.error)throw r.error}notify('JSON импортирован в Supabase.');await reload()}catch(e){notify('Ошибка импорта: '+(e.message||e),'err',e.message||String(e))}};
 
   const sortedChapters=[...chapters].sort((a,b)=>(a.chapter_number??0)-(b.chapter_number??0));
-  const tabs=[
-    ['character','ПЕРСОНАЖ',<UserRound size={15}/>,null],
-    ['chapters','ГЛАВЫ',<BookOpen size={15}/>,chapters.length],
-    ['relations','СВЯЗИ',<Database size={15}/>,relationships.length],
-    ['gallery','ГАЛЕРЕЯ',<Images size={15}/>,gallery.length],
-  ];
+  const filteredChapters=sortedChapters.filter(x=>(!search.chapters||`${x.title||''} ${x.content||''} ${x.chapter_number||''}`.toLowerCase().includes(search.chapters.toLowerCase()))&&(visibility==='all'||(visibility==='published'?x.published!==false:x.published===false)));
+  const filteredRelations=relationships.filter(x=>(!search.relations||`${x.name||''} ${x.role||''} ${x.relation||''}`.toLowerCase().includes(search.relations.toLowerCase()))&&(!noPhoto||!x.image_url));
+  const sortedGallery=[...gallery].sort((a,b)=>(a.sort_order??0)-(b.sort_order??0));
+  const filteredGallery=sortedGallery.filter(x=>!search.gallery||`${x.title||''} ${x.caption||x.description||''}`.toLowerCase().includes(search.gallery.toLowerCase()));
+  const tabs=[['character','ПЕРСОНАЖ',<UserRound size={15}/>,null],['chapters','ГЛАВЫ',<BookOpen size={15}/>,filteredChapters.length],['relations','СВЯЗИ',<Database size={15}/>,filteredRelations.length],['gallery','ГАЛЕРЕЯ',<Images size={15}/>,filteredGallery.length]];
+  const draftBanner=<DraftBanner info={draft(tab)} onRestore={()=>restoreDraft(tab)} onDelete={()=>removeDraft(tab)}/>;
+  const editorProps={innerRef:editorRef};
 
   return<Page title="Панель управления" sub="АДМИНИСТРАТОР // ДОСТУП РАЗРЕШЁН">
-    <div className="admin-top">
-      <span><span className="pulse">●</span> ДОСТУП РАЗРЕШЁН{userEmail?` // ${userEmail}`:''}</span>
-      <div>
-        <button className="ghost" onClick={reload}><RefreshCw size={14}/> ОБНОВИТЬ</button>
-        <button className="ghost" onClick={logout}><Lock size={14}/> ВЫЙТИ</button>
-      </div>
-    </div>
-    <div className="admin-tabs">
-      {tabs.map(([id,label,icon,count])=>
-        <button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}>{icon} {label}{count!=null&&<i className="count">{count}</i>}</button>)}
-    </div>
-    {msg&&<div key={msg.text+String(busy)} className={`toast ${msg.kind}`}>{msg.text}</div>}
+    <div className="admin-top"><span><span className="pulse">●</span> ДОСТУП РАЗРЕШЁН{userEmail?` // ${userEmail}`:''}</span><div><button className="ghost" onClick={reload}><RefreshCw size={14}/> ОБНОВИТЬ</button><button className="ghost" onClick={exportData}><Download size={14}/> ЭКСПОРТ JSON</button><label className="ghost import-label"><Upload size={14}/> ИМПОРТ JSON<input type="file" accept="application/json" onChange={importData}/></label><button className="ghost" onClick={async()=>{await supabase.auth.signOut();nav('/admin')}}><Lock size={14}/> ВЫЙТИ</button></div></div>
+    <div className="admin-tabs">{tabs.map(([id,label,icon,count])=><button key={id} className={tab===id?'active':''} onClick={()=>switchTab(id)}>{icon} {label}{count!=null&&<i className="count">{count}</i>}</button>)}</div>
+    {msg&&<div key={msg.text+String(msg.kind)} className={`toast ${msg.kind}`} aria-live="polite" onClick={()=>setMsg(null)}>{msg.text}{msg.detail&&<details onClick={e=>e.stopPropagation()}><summary>Техническая ошибка</summary><code>{msg.detail}</code></details>}{msg.undo&&<button className="undo" onClick={e=>{e.stopPropagation();msg.undo();setMsg(null)}}><Undo2 size={13}/> ОТМЕНИТЬ</button>}</div>}
+    {confirmState&&<div className="inline-confirm" role="alert"><AlertTriangle size={15}/><span>{confirmState.label}</span><button className="ghost" onClick={acceptConfirm}>ДА</button><button className="ghost" onClick={()=>{setConfirmState(null);setPendingTab('')}}>ОТМЕНА</button></div>}
+    {draftBanner}
 
-    {tab==='character'&&<Holo className="editor">
-      <div className="editor-head"><div><p className="kicker">PERSONNEL RECORD // SA-001</p><h2>{character?.id?'РЕДАКТИРОВАНИЕ ЗАПИСИ':'НОВАЯ ЗАПИСЬ ПЕРСОНАЖА'}</h2></div><Save/></div>
-      <form onSubmit={saveCharacter}>
-        <div className="form-grid">
-          <Field label="Имя и фамилия" required value={form.name} onChange={v=>setForm({...form,name:v})}/>
-          <Field label="Раса" value={form.species} onChange={v=>setForm({...form,species:v})}/>
-          <Field label="Возраст (число)" type="number" min="0" value={form.age} onChange={v=>setForm({...form,age:v})}/>
-          <Field label="Рост (см)" type="number" min="0" value={form.height} onChange={v=>setForm({...form,height:v})}/>
-          <Field label="Родной мир" value={form.homeworld} onChange={v=>setForm({...form,homeworld:v})}/>
-          <Field label="Статус" value={form.status} onChange={v=>setForm({...form,status:v})}/>
-          <Field label="Позывной" value={form.callsign} onChange={v=>setForm({...form,callsign:v})}/>
-          <div className="field">
-            <label>Основная фотография</label>
-            <div className="upload">
-              <input value={form.image_url||''} onChange={e=>setForm({...form,image_url:e.target.value})} placeholder="URL изображения"/>
-              <label className="upload-btn"><Upload size={14}/> ЗАГРУЗИТЬ<input type="file" accept="image/*" onChange={e=>upload(e,'character',url=>setForm(f=>({...f,image_url:url})))}/></label>
-            </div>
-          </div>
-        </div>
-        {form.image_url&&<Frame holo={form.holo_effect!==false} className="preview"><img src={form.image_url} alt="Предпросмотр"/></Frame>}
-        <label className="check"><input type="checkbox" checked={form.holo_effect!==false} onChange={e=>setForm({...form,holo_effect:e.target.checked})}/> Голопроекция портрета</label>
-        <TextField label="Краткое описание" value={form.summary} onChange={v=>setForm({...form,summary:v})}/>
-        <TextField label="Внешность" value={form.appearance} onChange={v=>setForm({...form,appearance:v})}/>
-        <TextField label="Характер" value={form.personality} onChange={v=>setForm({...form,personality:v})}/>
-        <TextField label="Предпочтения и симпатии" value={form.preferences} onChange={v=>setForm({...form,preferences:v})}/>
-        <TextField label="Антипатии и избегания" value={form.dislikes} onChange={v=>setForm({...form,dislikes:v})}/>
-        <TextField label="Мотивация" value={form.motivation} onChange={v=>setForm({...form,motivation:v})}/>
-        <button className="btn" disabled={busy}><Save size={16}/> СОХРАНИТЬ В БАЗУ</button>
-      </form>
-    </Holo>}
+    {tab==='character'&&<Holo className="editor" {...editorProps}><div className="editor-head"><div><p className="kicker">PERSONNEL RECORD // SA-001</p><h2>{character?.id?'РЕДАКТИРОВАНИЕ ЗАПИСИ':'НОВАЯ ЗАПИСЬ ПЕРСОНАЖА'}</h2></div><Save/></div><form onSubmit={saveCharacter}><div className="form-grid"><Field label="Имя и фамилия" required value={form.name} onChange={v=>setForm({...form,name:v})}/><Field label="Раса" value={form.species} onChange={v=>setForm({...form,species:v})}/><Field label="Возраст (число)" type="number" min="0" value={form.age} onChange={v=>setForm({...form,age:v})}/><Field label="Рост (см)" type="number" min="0" value={form.height} onChange={v=>setForm({...form,height:v})}/><Field label="Родной мир" value={form.homeworld} onChange={v=>setForm({...form,homeworld:v})}/><Field label="Статус" value={form.status} onChange={v=>setForm({...form,status:v})}/><Field label="Позывной" value={form.callsign} onChange={v=>setForm({...form,callsign:v})}/><div className="field"><label>Основная фотография</label><UploadField value={form.image_url} onChange={v=>setForm({...form,image_url:v})} folder="character" formKey="character" onUpload={handleUpload}/></div></div>{form.image_url&&<Frame holo={form.holo_effect!==false} className="preview"><SafeImage src={form.image_url} alt="Предпросмотр"/></Frame>}<label className="check"><input type="checkbox" checked={form.holo_effect!==false} onChange={e=>setForm({...form,holo_effect:e.target.checked})}/> Голопроекция портрета</label><TextField label="Краткое описание" value={form.summary} onChange={v=>setForm({...form,summary:v})}/><TextField label="Внешность" value={form.appearance} onChange={v=>setForm({...form,appearance:v})}/><TextField label="Характер" value={form.personality} onChange={v=>setForm({...form,personality:v})}/><TextField label="Предпочтения и симпатии" value={form.preferences} onChange={v=>setForm({...form,preferences:v})}/><TextField label="Антипатии и избегания" value={form.dislikes} onChange={v=>setForm({...form,dislikes:v})}/><TextField label="Мотивация" value={form.motivation} onChange={v=>setForm({...form,motivation:v})}/><SaveBar dirty={dirty.character} onSave={()=>document.querySelector('.editor form')?.requestSubmit()}/><button className="btn" disabled={busy}><Save size={16}/> СОХРАНИТЬ В БАЗУ</button>{dirty.character&&<button type="button" className="ghost" onClick={resetCharacter}>ОТМЕНА</button>}</form></Holo>}
 
-    {tab==='chapters'&&<div className="admin-columns">
-      <Holo className="editor">
-        <div className="editor-head"><div><p className="kicker">CONTENT MANAGEMENT</p><h2>{chForm.id?'РЕДАКТИРОВАНИЕ ГЛАВЫ':'НОВАЯ ГЛАВА'}</h2></div>{chForm.id?<Edit3/>:<Plus/>}</div>
-        <form onSubmit={saveChapter}>
-          <div className="form-grid">
-            <Field label="Номер главы" type="number" min="0" required value={chForm.chapter_number} onChange={v=>setChForm({...chForm,chapter_number:v})}/>
-            <Field label="Название" required value={chForm.title} onChange={v=>setChForm({...chForm,title:v})}/>
-          </div>
-          <TextField label="Текст главы" value={chForm.content} onChange={v=>setChForm({...chForm,content:v})}/>
-          <div className="field">
-            <label>Обложка главы</label>
-            <div className="upload">
-              <input value={chForm.cover_image||''} onChange={e=>setChForm({...chForm,cover_image:e.target.value})} placeholder="URL обложки"/>
-              <label className="upload-btn"><Upload size={14}/> ЗАГРУЗИТЬ<input type="file" accept="image/*" onChange={e=>upload(e,'chapters',url=>setChForm(f=>({...f,cover_image:url})))}/></label>
-            </div>
-          </div>
-          {chForm.cover_image&&<Frame holo className="preview"><img src={chForm.cover_image} alt="Обложка"/></Frame>}
-          <label className="check"><input type="checkbox" checked={chForm.published} onChange={e=>setChForm({...chForm,published:e.target.checked})}/> Публиковать главу</label>
-          <div className="editor-actions">
-            <button className="btn" disabled={busy}>{chForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ ГЛАВУ</>}</button>
-            {chForm.id&&<button type="button" className="ghost" onClick={resetChapter}>ОТМЕНА</button>}
-          </div>
-        </form>
-      </Holo>
-      <div className="list">
-        {sortedChapters.map(x=><Holo className="list-item" key={x.id}>
-          <div>
-            <span className="list-number">{x.chapter_number!=null?String(x.chapter_number).padStart(2,'0'):'—'}</span>
-            <div><b>{x.title||'Без названия'}</b><small className={x.published===false?'st-hidden':'st-on'}>{x.published===false?'СКРЫТА':'ОПУБЛИКОВАНА'}</small></div>
-          </div>
-          <div className="item-actions">
-            <button className="ghost" title={x.published===false?'Опубликовать':'Скрыть'} onClick={()=>togglePublish(x)}>{x.published===false?<EyeOff size={14}/>:<Eye size={14}/>}</button>
-            <button className="ghost" title="Редактировать" onClick={()=>setChForm({id:x.id,chapter_number:x.chapter_number??'',title:x.title||'',content:x.content||'',cover_image:x.cover_image||'',published:x.published!==false})}><Edit3 size={14}/></button>
-            <button className="danger" title="Удалить" onClick={()=>remove('chapters',x.id,'главу')}><Trash2 size={15}/></button>
-          </div>
-        </Holo>)}
-        {chapters.length===0&&<Holo className="empty slim"><BookOpen/><p>Глав пока нет. Добавьте первую слева.</p></Holo>}
-      </div>
-    </div>}
+    {tab==='chapters'&&<div className="admin-columns"><Holo className="editor" {...editorProps}><div className="editor-head"><div><p className="kicker">CONTENT MANAGEMENT</p><h2>{chForm.id?'РЕДАКТИРОВАНИЕ ГЛАВЫ':'НОВАЯ ГЛАВА'}</h2></div>{chForm.id?<Edit3/>:<Plus/>}</div><form onSubmit={saveChapter}><div className="form-grid"><Field label="Номер главы" type="number" min="0" required value={chForm.chapter_number||nextChapterNumber} onChange={v=>setChForm({...chForm,chapter_number:v})}/><Field label="Название" required value={chForm.title} onChange={v=>setChForm({...chForm,title:v})}/></div>{duplicateChapter&&<div className="inline-error"><AlertTriangle size={14}/> Этот номер главы уже используется.</div>}<TextField label="Текст главы" value={chForm.content} onChange={v=>setChForm({...chForm,content:v})}/><ChapterPreview chapter={chForm}/><div className="field"><label>Обложка главы</label><UploadField value={chForm.cover_image} onChange={v=>setChForm({...chForm,cover_image:v})} folder="chapters" formKey="chapters" onUpload={handleUpload}/></div>{chForm.cover_image&&<Frame holo={chForm.holo_effect!==false} className="preview"><SafeImage src={chForm.cover_image} alt="Обложка"/></Frame>}<label className="check"><input type="checkbox" checked={chForm.holo_effect!==false} onChange={e=>setChForm({...chForm,holo_effect:e.target.checked})}/> Голопроекция обложки</label><label className="check"><input type="checkbox" checked={chForm.published} onChange={e=>setChForm({...chForm,published:e.target.checked})}/> Публиковать главу</label><SaveBar dirty={dirty.chapters} onSave={()=>document.querySelector('.editor form')?.requestSubmit()}/><div className="editor-actions"><button className="btn" disabled={busy}>{chForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ ГЛАВУ</>}</button>{chForm.id&&<button type="button" className="ghost" onClick={resetChapter}>ОТМЕНА</button>}{chForm.id&&<button type="button" className="ghost mobile-only" onClick={goList}>К СПИСКУ</button>}</div></form></Holo><div className="list" ref={listRef}>{filteredChapters.map(x=><Holo className={`list-item ${editTarget===x.id?'edit-highlight':''}`} key={x.id}><div><span className="list-number">{x.chapter_number!=null?String(x.chapter_number).padStart(2,'0'):'—'}</span><div><b>{x.title||'Без названия'}</b><small className={x.published===false?'st-hidden':'st-on'}>{x.published===false?'СКРЫТА':'ОПУБЛИКОВАНА'}</small></div></div><div className="item-actions"><Link className="ghost" title="Открыть на публичной странице" to={`/history?chapter=${encodeURIComponent(x.id)}#chapter-${x.id}`}><ExternalLink size={14}/> ОТКРЫТЬ</Link><button className="ghost" title={x.published===false?'Опубликовать':'Скрыть'} onClick={()=>togglePublish(x)}>{x.published===false?<EyeOff size={14}/>:<Eye size={14}/>}</button><button className="ghost" title="Редактировать" onClick={()=>editChapter(x)}><Edit3 size={14}/></button><button className="danger" title="Удалить" onClick={()=>remove('chapters',x.id,'главу',x)}><Trash2 size={15}/></button></div></Holo>)}{!filteredChapters.length&&<Holo className="empty slim"><BookOpen/><p>По этому фильтру глав нет.</p></Holo>}</div></div>}
 
-    {tab==='relations'&&<div className="admin-columns">
-      <Holo className="editor">
-        <div className="editor-head"><div><p className="kicker">RELATIONSHIP DATABASE</p><h2>{relForm.id?'РЕДАКТИРОВАНИЕ СВЯЗИ':'НОВАЯ СВЯЗЬ'}</h2></div>{relForm.id?<Edit3/>:<Plus/>}</div>
-        <form onSubmit={saveRelation}>
-          <div className="form-grid">
-            <Field label="Имя" required value={relForm.name} onChange={v=>setRelForm({...relForm,name:v})}/>
-            <Field label="Роль" value={relForm.role} onChange={v=>setRelForm({...relForm,role:v})}/>
-          </div>
-          <Field label="Отношение" value={relForm.relation} onChange={v=>setRelForm({...relForm,relation:v})}/>
-          <TextField label="Цитата" rows="3" value={relForm.quote} onChange={v=>setRelForm({...relForm,quote:v})}/>
-          <div className="field">
-            <label>Фотография связи</label>
-            <div className="upload">
-              <input value={relForm.image_url||''} onChange={e=>setRelForm({...relForm,image_url:e.target.value})} placeholder="URL изображения"/>
-              <label className="upload-btn"><Upload size={14}/> ЗАГРУЗИТЬ<input type="file" accept="image/*" onChange={e=>upload(e,'relationships',url=>setRelForm(f=>({...f,image_url:url})))}/></label>
-            </div>
-          </div>
-          {relForm.image_url&&<Frame holo={relForm.holo_effect!==false} className="preview"><img src={relForm.image_url} alt="Предпросмотр"/></Frame>}
-          <label className="check"><input type="checkbox" checked={relForm.holo_effect!==false} onChange={e=>setRelForm({...relForm,holo_effect:e.target.checked})}/> Голопроекция</label>
-          <div className="editor-actions">
-            <button className="btn" disabled={busy}>{relForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ СВЯЗЬ</>}</button>
-            {relForm.id&&<button type="button" className="ghost" onClick={resetRelation}>ОТМЕНА</button>}
-          </div>
-        </form>
-      </Holo>
-      <div className="list">
-        {relationships.map(x=><Holo className="list-item" key={x.id}>
-          <div>
-            {x.image_url?<Frame holo={x.holo_effect!==false} className="thumb"><img src={x.image_url} alt=""/></Frame>:<span className="avatar mini">{String(x.name||'?')[0]}</span>}
-            <div><b>{x.name}</b><small>{x.role} // {x.relation}</small></div>
-          </div>
-          <div className="item-actions">
-            <button className="ghost" title="Редактировать" onClick={()=>setRelForm({id:x.id,name:x.name||'',role:x.role||'',relation:x.relation||'',quote:x.quote||'',image_url:x.image_url||'',holo_effect:x.holo_effect!==false})}><Edit3 size={14}/></button>
-            <button className="danger" title="Удалить" onClick={()=>remove('relationships',x.id,'связь')}><Trash2 size={15}/></button>
-          </div>
-        </Holo>)}
-        {relationships.length===0&&<Holo className="empty slim"><UserRound/><p>Связей пока нет. Добавьте первую слева.</p></Holo>}
-      </div>
-    </div>}
+    {tab==='relations'&&<div className="admin-columns"><Holo className="editor" {...editorProps}><div className="editor-head"><div><p className="kicker">RELATIONSHIP DATABASE</p><h2>{relForm.id?'РЕДАКТИРОВАНИЕ СВЯЗИ':'НОВАЯ СВЯЗЬ'}</h2></div>{relForm.id?<Edit3/>:<Plus/>}</div><form onSubmit={saveRelation}><div className="form-grid"><Field label="Имя" required value={relForm.name} onChange={v=>setRelForm({...relForm,name:v})}/><Field label="Роль" value={relForm.role} onChange={v=>setRelForm({...relForm,role:v})}/></div><Field label="Отношение" value={relForm.relation} onChange={v=>setRelForm({...relForm,relation:v})}/><TextField label="Цитата" rows="3" value={relForm.quote} onChange={v=>setRelForm({...relForm,quote:v})}/><div className="field"><label>Фотография связи</label><UploadField value={relForm.image_url} onChange={v=>setRelForm({...relForm,image_url:v})} folder="relationships" formKey="relations" onUpload={handleUpload}/></div>{relForm.image_url&&<Frame holo={relForm.holo_effect!==false} className="preview"><SafeImage src={relForm.image_url} alt="Предпросмотр"/></Frame>}<label className="check"><input type="checkbox" checked={relForm.holo_effect!==false} onChange={e=>setRelForm({...relForm,holo_effect:e.target.checked})}/> Голопроекция</label><SaveBar dirty={dirty.relations} onSave={()=>document.querySelector('.editor form')?.requestSubmit()}/><div className="editor-actions"><button className="btn" disabled={busy}>{relForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ СВЯЗЬ</>}</button>{relForm.id&&<><button type="button" className="ghost" onClick={resetRelation}>ОТМЕНА</button><button type="button" className="ghost mobile-only" onClick={goList}>К СПИСКУ</button></>}</div></form></Holo><div className="list" ref={listRef}>{filteredRelations.map(x=><Holo className={`list-item ${editTarget===x.id?'edit-highlight':''}`} key={x.id}><div>{x.image_url?<Frame holo={x.holo_effect!==false} className="thumb"><SafeImage src={x.image_url} alt=""/></Frame>:<span className="avatar mini">{String(x.name||'?')[0]}</span>}<div><b>{x.name}</b><small>{x.role} // {x.relation}</small></div></div><div className="item-actions"><button className="ghost" title="Редактировать" onClick={()=>editRelation(x)}><Edit3 size={14}/></button><button className="danger" title="Удалить" onClick={()=>remove('relationships',x.id,'связь',x)}><Trash2 size={15}/></button></div></Holo>)}{!filteredRelations.length&&<Holo className="empty slim"><UserRound/><p>По этому фильтру связей нет.</p></Holo>}</div></div>}
 
-    {tab==='gallery'&&<div className="admin-columns">
-      <Holo className="editor">
-        <div className="editor-head"><div><p className="kicker">VISUAL DATABASE</p><h2>{galForm.id?'РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЯ':'НОВОЕ ИЗОБРАЖЕНИЕ'}</h2></div>{galForm.id?<Edit3/>:<Images/>}</div>
-        <form onSubmit={saveGallery}>
-          <div className="form-grid">
-            <Field label="Название" value={galForm.title} onChange={v=>setGalForm({...galForm,title:v})}/>
-            <Field label="Подпись (caption)" value={galForm.caption} onChange={v=>setGalForm({...galForm,caption:v})}/>
-          </div>
-          <Field label="Порядок сортировки" type="number" value={galForm.sort_order} onChange={v=>setGalForm({...galForm,sort_order:v})}/>
-          <div className="field">
-            <label>Изображение</label>
-            <div className="upload">
-              <input value={galForm.image_url||''} onChange={e=>setGalForm({...galForm,image_url:e.target.value})} placeholder="URL изображения"/>
-              <label className="upload-btn"><Upload size={14}/> ЗАГРУЗИТЬ<input type="file" accept="image/*" onChange={e=>upload(e,'gallery',url=>setGalForm(f=>({...f,image_url:url})))}/></label>
-            </div>
-          </div>
-          {galForm.image_url&&<Frame holo={galForm.holo_effect!==false} className="preview"><img src={galForm.image_url} alt="Предпросмотр"/></Frame>}
-          <label className="check"><input type="checkbox" checked={galForm.holo_effect!==false} onChange={e=>setGalForm({...galForm,holo_effect:e.target.checked})}/> Голопроекция</label>
-          <div className="editor-actions">
-            <button className="btn" disabled={busy}>{galForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ</>}</button>
-            {(galForm.id||galForm.image_url||galForm.title)&&<button type="button" className="ghost" onClick={resetGallery}>ОТМЕНА</button>}
-          </div>
-        </form>
-      </Holo>
-      <div className="list">
-        {gallery.map(x=><Holo className="list-item" key={x.id}>
-          <div>
-            {x.image_url&&<Frame holo={x.holo_effect!==false} className="thumb"><img src={x.image_url} alt=""/></Frame>}
-            <div><b>{x.title||'Без названия'}</b><small>{x.caption||x.description||''} {x.sort_order!=null?`// ПОРЯДОК ${x.sort_order}`:''}</small></div>
-          </div>
-          <div className="item-actions">
-            <button className="ghost" title="Редактировать" onClick={()=>setGalForm({id:x.id,title:x.title||'',caption:x.caption||x.description||'',image_url:x.image_url||'',sort_order:x.sort_order??0,holo_effect:x.holo_effect!==false})}><Edit3 size={14}/></button>
-            <button className="danger" title="Удалить" onClick={()=>deleteGallery(x)}><Trash2 size={15}/></button>
-          </div>
-        </Holo>)}
-        {gallery.length===0&&<Holo className="empty slim"><Images/><p>Галерея пуста. Добавьте изображение слева.</p></Holo>}
-      </div>
-    </div>}
-
-    <div className="admin-foot"><Terminal size={14}/> ИСТОЧНИК ДАННЫХ: SUPABASE // Данные отображаются напрямую из Supabase. Возраст и рост хранятся числами и форматируются интерфейсом.</div>
+    {tab==='gallery'&&<div className="admin-columns"><Holo className="editor" {...editorProps}><div className="editor-head"><div><p className="kicker">VISUAL DATABASE</p><h2>{galForm.id?'РЕДАКТИРОВАНИЕ ИЗОБРАЖЕНИЯ':'НОВОЕ ИЗОБРАЖЕНИЕ'}</h2></div>{galForm.id?<Edit3/>:<Images/>}</div><form onSubmit={saveGallery}><div className="form-grid"><Field label="Название" value={galForm.title} onChange={v=>setGalForm({...galForm,title:v})}/><Field label="Подпись (caption)" value={galForm.caption} onChange={v=>setGalForm({...galForm,caption:v})}/></div><Field label="Порядок сортировки" type="number" value={galForm.sort_order} onChange={v=>setGalForm({...galForm,sort_order:v})}/><div className="field"><label>Изображение</label><UploadField value={galForm.image_url} onChange={v=>setGalForm({...galForm,image_url:v})} folder="gallery" formKey="gallery" onUpload={handleUpload}/></div>{galForm.image_url&&<Frame holo={galForm.holo_effect!==false} className="preview"><SafeImage src={galForm.image_url} alt="Предпросмотр"/></Frame>}<label className="check"><input type="checkbox" checked={galForm.holo_effect!==false} onChange={e=>setGalForm({...galForm,holo_effect:e.target.checked})}/> Голопроекция</label><SaveBar dirty={dirty.gallery} onSave={()=>document.querySelector('.editor form')?.requestSubmit()}/><div className="editor-actions"><button className="btn" disabled={busy}>{galForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ</>}</button>{(galForm.id||galForm.image_url||galForm.title)&&<button type="button" className="ghost" onClick={resetGallery}>ОТМЕНА</button>}{galForm.id&&<button type="button" className="ghost mobile-only" onClick={goList}>К СПИСКУ</button>}</div></form></Holo><div className="list" ref={listRef}>{filteredGallery.map((x,i)=><Holo className={`list-item gallery-list-item ${editTarget===x.id?'edit-highlight':''}`} key={x.id} draggable onDragStart={()=>setDragGallery(x.id)} onDragOver={e=>e.preventDefault()} onDrop={()=>{if(dragGallery&&dragGallery!==x.id)reorderGallery(dragGallery,x.id);setDragGallery(null)}}><div>{x.image_url&&<Frame holo={x.holo_effect!==false} className="thumb"><SafeImage src={x.image_url} alt=""/></Frame>}<div><b>{x.title||'Без названия'}</b><small>{x.caption||x.description||''} // ПОРЯДОК {x.sort_order??0}</small></div></div><div className="item-actions"><button className="ghost" title="Выше" onClick={()=>moveGallery(x.id,-1)}><ArrowUp size={14}/></button><button className="ghost" title="Ниже" onClick={()=>moveGallery(x.id,1)}><ArrowDown size={14}/></button><button className="ghost" title="Редактировать" onClick={()=>editGallery(x)}><Edit3 size={14}/></button><button className="danger" title="Удалить" onClick={()=>remove('gallery',x.id,'изображение',x)}><Trash2 size={15}/></button></div></Holo>)}{!filteredGallery.length&&<Holo className="empty slim"><Images/><p>По этому фильтру изображений нет.</p></Holo>}</div></div>}
+    <div className="list-filters">{tab==='chapters'&&<><Search size={15}/><input type="search" placeholder="Поиск по главам…" value={search.chapters} onChange={e=>setSearch(x=>({...x,chapters:e.target.value}))}/><select value={visibility} onChange={e=>setVisibility(e.target.value)}><option value="all">ВСЕ</option><option value="published">ОПУБЛИКОВАННЫЕ</option><option value="hidden">СКРЫТЫЕ</option></select></>}{tab==='relations'&&<><Search size={15}/><input type="search" placeholder="Поиск по связям…" value={search.relations} onChange={e=>setSearch(x=>({...x,relations:e.target.value}))}/><label className="check"><input type="checkbox" checked={noPhoto} onChange={e=>setNoPhoto(e.target.checked)}/> БЕЗ ФОТО</label></>}{tab==='gallery'&&<><Search size={15}/><input type="search" placeholder="Поиск по галерее…" value={search.gallery} onChange={e=>setSearch(x=>({...x,gallery:e.target.value}))}/></>}</div>
+    <div className="admin-foot"><Terminal size={14}/> ИСТОЧНИК ДАННЫХ: SUPABASE // Автосохранение черновиков: 1 секунда. Ctrl+S — сохранить, Esc — отменить редактирование.</div>
   </Page>;
 }
 
 function Field({label,value,onChange,type='text',required,min}){
+  const id=useId();
   return<div className="field">
-    <label>{label}</label>
-    <input type={type} min={min} required={required} value={value??''} onChange={e=>onChange(e.target.value)}/>
+    <label htmlFor={id}>{label}</label>
+    <input id={id} type={type} min={min} required={required} value={value??''} onChange={e=>onChange(e.target.value)}/>
   </div>;
 }
 function TextField({label,value,onChange,rows='5'}){
+  const id=useId();
   return<div className="field">
-    <label>{label}</label>
-    <textarea rows={rows} value={value??''} onChange={e=>onChange(e.target.value)}/>
+    <label htmlFor={id}>{label}</label>
+    <textarea id={id} rows={rows} value={value??''} onChange={e=>onChange(e.target.value)}/>
   </div>;
 }
 
