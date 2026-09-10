@@ -177,10 +177,16 @@ footer a:hover{color:#82c8ee}
 .holo-panel{
   isolation:isolate;
 }
-/* Угловые маркеры */
-.corner{position:absolute;display:block;width:16px;height:16px;z-index:3;pointer-events:none}
-.corner.tl{top:3px;left:3px;border-top:2px solid #7cd6ff;border-left:2px solid #7cd6ff;box-shadow:-1px -1px 6px rgba(80,190,255,.35)}
-.corner.br{bottom:3px;right:3px;border-bottom:2px solid #7cd6ff;border-right:2px solid #7cd6ff;box-shadow:1px 1px 6px rgba(80,190,255,.35)}
+/* Угловые маркеры.
+   Селекторы вида .text-panel>*, .chapter-panel>*, .relation>* и т.п.
+   встречаются в файле ПОЗЖЕ и имели ту же специфичность (0,1,0), что и
+   .corner, — они сбрасывали position у <i class="corner">, и маркеры
+   выпадали из углов, становясь обычным блоком сверху панели.
+   Повышенная специфичность .holo-panel>i.corner гарантирует абсолютное
+   позиционирование в углах на любой панели. */
+.holo-panel>i.corner{position:absolute;display:block;width:16px;height:16px;z-index:3;pointer-events:none}
+.holo-panel>i.corner.tl{top:3px;left:3px;border-top:2px solid #7cd6ff;border-left:2px solid #7cd6ff;box-shadow:-1px -1px 6px rgba(80,190,255,.35)}
+.holo-panel>i.corner.br{bottom:3px;right:3px;border-bottom:2px solid #7cd6ff;border-right:2px solid #7cd6ff;box-shadow:1px 1px 6px rgba(80,190,255,.35)}
 
 /* Заголовок страницы */
 .page{padding-top:54px}
