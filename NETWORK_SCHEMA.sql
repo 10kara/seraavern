@@ -6,7 +6,8 @@
 ALTER TABLE public.relationships
   ADD COLUMN IF NOT EXISTS pos_x double precision,
   ADD COLUMN IF NOT EXISTS pos_y double precision,
-  ADD COLUMN IF NOT EXISTS group_tag text DEFAULT 'allied';
+  ADD COLUMN IF NOT EXISTS group_tag text DEFAULT 'ally';
+ALTER TABLE public.relationships ALTER COLUMN group_tag SET DEFAULT 'ally';
 
 -- Комментарии-метки для наглядности в SQL Editor.
 COMMENT ON COLUMN public.relationships.pos_x IS 'X-координата узла на карте 0..100 (NULL = авто)';
