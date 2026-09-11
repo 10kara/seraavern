@@ -163,6 +163,33 @@ async function writeResilient(build,payload){
 /* ============================================================
    ЗАГРУЗКА АРХИВА
    ============================================================ */
+const ARCHIVE_REQUEST_TIMEOUT=12000;
+
+// Supabase fetch по умолчанию может ждать ответ бесконечно, если запрос
+// блокируется расширением, DNS, сетью или зависшим proxy. Такой запрос не
+// должен оставлять приложение на экране «УСТАНОВКА СВЯЗИ» навсегда.
+function archiveRequest(query,label,timeout=ARCHIVE_REQUEST_TIMEOUT){
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  const request=controller&&typeof query.abortSignal==='function'
+    ?query.abortSignal(controller.signal)
+    :query;
+  let timer=0;
+  const deadline=new Promise((_,reject)=>{
+    timer=setTimeout(()=>{
+      controller?.abort();
+      reject(new Error(`${label}: превышено время ожидания подключения (${Math.round(timeout/1000)} с).`));
+    },timeout);
+  });
+  return Promise.race([Promise.resolve(request),deadline]).finally(()=>clearTimeout(timer));
+}
+
+const archiveError=e=>{
+  const message=e?.message||String(e||'Не удалось загрузить архив.');
+  return message==='Failed to fetch'
+    ?'Не удалось подключиться к серверу архива. Проверьте сеть или настройки Supabase.'
+    :message;
+};
+
 function useArchive(){
   const[c,setC]=useState(supabase?null:fallback),
         [ch,setCh]=useState(supabase?[]:fallbackChapters),
@@ -172,38 +199,49 @@ function useArchive(){
         [loading,setLoading]=useState(!!supabase),
         [loaded,setLoaded]=useState(!supabase),
         [error,setError]=useState('');
+  const same=(p,n)=>p===n||(p!=null&&n!=null&&JSON.stringify(p)===JSON.stringify(n));
   const load=async()=>{
     if(!supabase){setLoading(false);setLoaded(true);return}
     setLoading(true);setError('');
+    let primaryLoaded=false;
     try{
-      const[a,b,d,gal,ln]=await Promise.all([
-        supabase.from('character').select('*').order('id').limit(1),
-        supabase.from('chapters').select('*').order('chapter_number'),
-        supabase.from('relationships').select('*').order('id'),
-        supabase.from('gallery').select('*').order('sort_order').order('created_at',{ascending:false}),
-        supabase.from('character_links').select('*').order('id')
+      // Character, chapters and relationships are critical for the first
+      // render. Gallery and links are optional and are loaded afterwards so
+      // a missing/blocked optional table cannot hold the whole application.
+      const[a,b,d]=await Promise.all([
+        archiveRequest(supabase.from('character').select('*').order('id').limit(1),'character'),
+        archiveRequest(supabase.from('chapters').select('*').order('chapter_number'),'chapters'),
+        archiveRequest(supabase.from('relationships').select('*').order('id'),'relationships')
       ]);
       if(a.error)throw a.error;
       if(b.error)throw b.error;
       if(d.error)throw d.error;
-      // Если данные не изменились — не обновляем стейт: иначе каждый
-      // focus вкладки и каждое realtime-событие перечискивают весь архив
-      // и ререндерят всё приложение зря.
-      const same=(p,n)=>p===n||(p!=null&&n!=null&&JSON.stringify(p)===JSON.stringify(n));
       const nextC=a.data?.[0]?displayCharacter(a.data[0]):null;
       const nextCh=Array.isArray(b.data)?b.data:[];
       const nextR=Array.isArray(d.data)?d.data:[];
       setC(prev=>same(prev,nextC)?prev:nextC);
       setCh(prev=>same(prev,nextCh)?prev:nextCh);
       setR(prev=>same(prev,nextR)?prev:nextR);
-      // Отсутствие таблицы gallery не должно ломать весь архив.
-      if(gal.error){console.warn('[archive] gallery:',gal.error.message);setG(prev=>same(prev,[])?prev:[])}
-      else{const nextG=Array.isArray(gal.data)?gal.data:[];setG(prev=>same(prev,nextG)?prev:nextG)}
-      // character_links может отсутствовать в старых БД — предупреждаем, не падаем.
-      if(ln.error){console.warn('[archive] character_links:',ln.error.message);setLk(prev=>same(prev,[])?prev:[])}
-      else{const nextLk=Array.isArray(ln.data)?ln.data:[];setLk(prev=>same(prev,nextLk)?prev:nextLk)}
-    }catch(e){setError(e.message||'Не удалось загрузить архив.')}
+      primaryLoaded=true;
+    }catch(e){setError(archiveError(e))}
     finally{setLoading(false);setLoaded(true)}
+
+    if(!primaryLoaded)return;
+    // Не задерживаем первый экран из-за gallery/character_links. Эти данные
+    // появятся сразу после ответа и не влияют на открытие основных страниц.
+    Promise.all([
+      archiveRequest(supabase.from('gallery').select('*').order('sort_order').order('created_at',{ascending:false}),'gallery').catch(error=>({error})),
+      archiveRequest(supabase.from('character_links').select('*').order('id'),'character_links').catch(error=>({error}))
+    ]).then(([gal,ln])=>{
+      // Отсутствие таблицы gallery не должно ломать архив и не должно
+      // стирать уже показанные данные при временной сетевой ошибке.
+      if(gal.error)console.warn('[archive] gallery:',gal.error.message||gal.error);
+      else{const nextG=Array.isArray(gal.data)?gal.data:[];setG(prev=>same(prev,nextG)?prev:nextG)}
+      // character_links может отсутствовать в старых БД — это необязательный
+      // модуль, поэтому основная страница всё равно остаётся доступной.
+      if(ln.error)console.warn('[archive] character_links:',ln.error.message||ln.error);
+      else{const nextLk=Array.isArray(ln.data)?ln.data:[];setLk(prev=>same(prev,nextLk)?prev:nextLk)}
+    });
   };
   useEffect(()=>{
     load();
@@ -317,7 +355,7 @@ function Cursor(){
 function TypeLine({text,delay=0}){const[out,setOut]=useState('');useEffect(()=>{let i=0;const t=setTimeout(()=>{const id=setInterval(()=>{setOut(text.slice(0,++i));if(i>=text.length)clearInterval(id)},28)},delay);return()=>clearTimeout(t)},[text,delay]);return<span>{out}<i className="type-caret">▌</i></span>}
 function TerminalTicker(){const messages=['ARCHIVE LINK STABLE','FORCE SIGNATURE // LOW INTENSITY','JEDI TEMPLE DATABASE // SA-001','VISUAL RECORDS INDEXED'];const[i,setI]=useState(0);useEffect(()=>{const t=setInterval(()=>setI(x=>(x+1)%messages.length),4200);return()=>clearInterval(t)},[]);return<div className="terminal-ticker"><span>SYS://</span><TypeLine text={messages[i]}/></div>}
 
-function Layout({error='',children}){
+function Layout({error='',onRetry,children}){
   const[open,setOpen]=useState(false);
   const[forceMode,setForceMode]=useState(false);const[theme,setTheme]=useState(()=>localStorage.getItem('archive-theme')||'jedi');
   const{pathname}=useLocation();
@@ -373,7 +411,7 @@ function Layout({error='',children}){
       <nav className={open?'open':''}>{links.map(([to,l])=><NavLink key={to} to={to} onClick={()=>setOpen(false)}>{l}</NavLink>)}</nav>
     </header>
     <main>
-      {error&&<div className="db-error"><Terminal size={14}/> ОШИБКА БАЗЫ ДАННЫХ // {error}</div>}
+      {error&&<div className="db-error"><Terminal size={14}/><span>ОШИБКА БАЗЫ ДАННЫХ // {error}</span>{onRetry&&<button type="button" className="ghost" onClick={onRetry}><RefreshCw size={13}/> ПОВТОРИТЬ</button>}</div>}
       <div className="route-stage" key={pathname}>{children}</div>
     </main>
     <footer>
@@ -1180,7 +1218,7 @@ function App(){
   if(!archive.loaded)return<Layout>
     <Page title="Jedi Archives" sub="УСТАНОВКА СВЯЗИ"><div className="loading skeleton-loading"><div className="skeleton sk-title"/><div className="skeleton sk-panel"/><div className="skeleton sk-panel"/><p>ПОДКЛЮЧЕНИЕ К АРХИВУ…</p></div></Page>
   </Layout>;
-  return<Layout error={archive.error}>
+  return<Layout error={archive.error} onRetry={archive.reload}>
     <Routes>
       <Route path="/" element={<Home c={archive.character} ch={archive.chapters} r={archive.relationships} g={archive.gallery} links={archive.links}/>}/>
       <Route path="/character" element={<Character c={archive.character}/>}/>

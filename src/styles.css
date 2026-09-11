@@ -931,3 +931,6 @@ html.is-scrolling .holo-particles{
   opacity:.12;
 }
 html.is-scrolling .reading-progress{transition:none}
+.db-error span{flex:1;min-width:0}
+.db-error .ghost{flex:none;white-space:nowrap}
+@media(max-width:600px){.db-error{align-items:flex-start;flex-wrap:wrap}.db-error .ghost{margin-left:23px}}
