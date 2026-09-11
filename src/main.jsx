@@ -338,10 +338,31 @@ function Layout({error='',children}){
       keys.push(e.key);
       if(keys.slice(-konami.length).join()===konami.join()){setForceMode(v=>!v);keys.length=0}
     };
-    const scroll=()=>{const d=document.documentElement;document.documentElement.style.setProperty('--read',`${Math.min(100,Math.max(0,scrollY/(d.scrollHeight-innerHeight||1)*100))}%`)};
+    let progressRaf=0,scrollStopTimer=0;
+    const paintProgress=()=>{
+      progressRaf=0;
+      const d=document.documentElement;
+      const max=d.scrollHeight-window.innerHeight;
+      const progress=max>0?Math.min(100,Math.max(0,(window.scrollY/max)*100)):0;
+      d.style.setProperty('--read',`${progress}%`);
+    };
+    const scroll=()=>{
+      // Не пересчитываем layout на каждое событие wheel/touchmove и
+      // временно ставим декоративные анимации на паузу — контент остаётся
+      // плавным даже на длинных страницах админки.
+      document.documentElement.classList.add('is-scrolling');
+      if(!progressRaf)progressRaf=requestAnimationFrame(paintProgress);
+      clearTimeout(scrollStopTimer);
+      scrollStopTimer=setTimeout(()=>document.documentElement.classList.remove('is-scrolling'),140);
+    };
     const click=playBlip;
-    window.addEventListener('pointermove',move);window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);scroll();
-    return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('keydown',key);window.removeEventListener('scroll',scroll);document.removeEventListener('click',click)};
+    window.addEventListener('pointermove',move,{passive:true});window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);paintProgress();
+    return()=>{
+      window.removeEventListener('pointermove',move);window.removeEventListener('keydown',key);window.removeEventListener('scroll',scroll);document.removeEventListener('click',click);
+      if(progressRaf)cancelAnimationFrame(progressRaf);
+      clearTimeout(scrollStopTimer);
+      document.documentElement.classList.remove('is-scrolling');
+    };
   },[]);
   const links=[['/','Главная'],['/character','Персонаж'],['/history','История'],['/relationships','Взаимоотношения'],['/gallery','Галерея']];
   return<div className={`shell ${forceMode?'force-mode':''} theme-${theme}`}>
@@ -836,7 +857,12 @@ function AdminPanel({archive}){
   const dragPointerRef=useRef(null);
   const dragPositionRef=useRef(null);
   const[busy,setBusy]=useState(false),[msg,setMsg]=useState(null),[confirmState,setConfirmState]=useState(null),[pendingTab,setPendingTab]=useState('');
-  const[form,setForm]=useState({...EMPTY_CHARACTER});
+  // Панель монтируется уже после загрузки архива, поэтому существующую
+  // запись персонажа можно сразу положить в форму. Раньше форма всегда
+  // начиналась пустой и считалась «грязной», из-за чего эффект синхронизации
+  // сам себя блокировал до ручного перехода на другую вкладку.
+  const[form,setForm]=useState(()=>character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER});
+  const characterHydrationRef=useRef(character?.id??null);
   const[chForm,setChForm]=useState({...EMPTY_CHAPTER});
   const[relForm,setRelForm]=useState({...EMPTY_RELATION});
   const[galForm,setGalForm]=useState({...EMPTY_GALLERY});
@@ -868,8 +894,18 @@ function AdminPanel({archive}){
   const dirty={character:!formEqual(only(form,CHAR_FIELDS),only(characterBase,CHAR_FIELDS)),chapters:!formEqual(only(chForm,CH_FIELDS),only(chapterBase,CH_FIELDS)),relations:!formEqual(only(relForm,REL_FIELDS),only(relationBase,REL_FIELDS)),gallery:!formEqual(only(galForm,GAL_FIELDS),only(galleryBase,GAL_FIELDS))};
   const anyDirty=Object.values(dirty).some(Boolean);
 
-  // Внешний reload не стирает начатое редактирование персонажа.
-  useEffect(()=>{if(!dirty.character)setForm(character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER})},[character]);
+  // Внешний reload не стирает начатое редактирование персонажа, но
+  // подхватывает запись, если она появилась после первого рендера.
+  useEffect(()=>{
+    const id=character?.id??null;
+    const next=character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER};
+    if(characterHydrationRef.current!==id){
+      characterHydrationRef.current=id;
+      setForm(next);
+      return;
+    }
+    if(!dirty.character)setForm(next);
+  },[character,dirty.character]);
   useEffect(()=>{
     if(!draftsReady)return;
     const timers=[];

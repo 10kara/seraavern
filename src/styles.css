@@ -901,3 +901,33 @@ html.cursor-custom,html.cursor-custom *{cursor:none!important}
 
 @media(max-width:900px){.network-stage{height:380px}.matrix th:first-child,.matrix td:first-child{min-width:140px}}
 @media(max-width:600px){.network-stage{height:320px}.network-node>b{font-size:8px;max-width:80px}.network-actions{width:100%}.network-actions .ghost{flex:1}}
+
+/* ---------- v18: плавная прокрутка без фоновой нагрузки ---------- */
+/* Админка содержит длинные формы и списки. Декоративные бесконечные
+   анимации не должны пересчитывать и перерисовывать их во время работы. */
+body[data-page^="/admin"] .route-stage,
+body[data-page^="/admin"] .route-stage *,
+body[data-page^="/admin"] .route-stage *::before,
+body[data-page^="/admin"] .route-stage *::after{
+  animation:none!important;
+}
+
+/* Layout добавляет этот класс только на время wheel/touch-прокрутки.
+   Текст и панели остаются видимыми, но дорогие glow/scan/floating-эффекты
+   не конкурируют с прокруткой за главный поток и compositor. */
+html.is-scrolling .route-stage,
+html.is-scrolling .route-stage *,
+html.is-scrolling .route-stage *::before,
+html.is-scrolling .route-stage *::after,
+html.is-scrolling .holo-ambient *,
+html.is-scrolling .holo-particles *,
+html.is-scrolling .scanline,
+html.is-scrolling body::before,
+html.is-scrolling body::after{
+  animation-play-state:paused!important;
+}
+html.is-scrolling .holo-ambient,
+html.is-scrolling .holo-particles{
+  opacity:.12;
+}
+html.is-scrolling .reading-progress{transition:none}
