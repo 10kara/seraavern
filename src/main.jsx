@@ -104,7 +104,23 @@ const RELATION_GROUPS=[
   ['sith','СИТХЫ/ВРАГИ','#ff6464'],
   ['other','ПРОЧИЕ','#a1b8cc']
 ];
-const groupMeta=g=>RELATION_GROUPS.find(([k])=>k===String(g||'').toLowerCase())||RELATION_GROUPS[4];
+// Нормализуем старое значение `allied` из ранней версии схемы к ключу,
+// который использует интерфейс (`ally`). Иначе такие узлы попадали в
+// «прочие» и исчезали из фильтра «Союзники».
+const normalizeGroup=g=>{
+  const key=String(g||'').trim().toLowerCase();
+  if(key==='allied'||key==='allies'||key==='allieds')return'ally';
+  return RELATION_GROUPS.some(([k])=>k===key)?key:'other';
+};
+const groupMeta=g=>RELATION_GROUPS.find(([k])=>k===normalizeGroup(g))||RELATION_GROUPS[4];
+const relationGroup=x=>{
+  const raw=String(x?.group_tag||'').trim();
+  if(raw)return normalizeGroup(raw);
+  if(/джедай/i.test(x?.role||''))return'jedi';
+  if(/семь|отец|мать|брат|сестр/i.test(x?.role||''))return'family';
+  if(/союз|союзник|друж|друг/i.test(`${x?.role||''} ${x?.relation||''}`))return'ally';
+  return'other';
+};
 
 function RelationTags({value,compact=false}){
   const labels=relationLabels(value);
@@ -147,6 +163,33 @@ async function writeResilient(build,payload){
 /* ============================================================
    ЗАГРУЗКА АРХИВА
    ============================================================ */
+const ARCHIVE_REQUEST_TIMEOUT=12000;
+
+// Supabase fetch по умолчанию может ждать ответ бесконечно, если запрос
+// блокируется расширением, DNS, сетью или зависшим proxy. Такой запрос не
+// должен оставлять приложение на экране «УСТАНОВКА СВЯЗИ» навсегда.
+function archiveRequest(query,label,timeout=ARCHIVE_REQUEST_TIMEOUT){
+  const controller=typeof AbortController==='function'?new AbortController():null;
+  const request=controller&&typeof query.abortSignal==='function'
+    ?query.abortSignal(controller.signal)
+    :query;
+  let timer=0;
+  const deadline=new Promise((_,reject)=>{
+    timer=setTimeout(()=>{
+      controller?.abort();
+      reject(new Error(`${label}: превышено время ожидания подключения (${Math.round(timeout/1000)} с).`));
+    },timeout);
+  });
+  return Promise.race([Promise.resolve(request),deadline]).finally(()=>clearTimeout(timer));
+}
+
+const archiveError=e=>{
+  const message=e?.message||String(e||'Не удалось загрузить архив.');
+  return message==='Failed to fetch'
+    ?'Не удалось подключиться к серверу архива. Проверьте сеть или настройки Supabase.'
+    :message;
+};
+
 function useArchive(){
   const[c,setC]=useState(supabase?null:fallback),
         [ch,setCh]=useState(supabase?[]:fallbackChapters),
@@ -156,38 +199,49 @@ function useArchive(){
         [loading,setLoading]=useState(!!supabase),
         [loaded,setLoaded]=useState(!supabase),
         [error,setError]=useState('');
+  const same=(p,n)=>p===n||(p!=null&&n!=null&&JSON.stringify(p)===JSON.stringify(n));
   const load=async()=>{
     if(!supabase){setLoading(false);setLoaded(true);return}
     setLoading(true);setError('');
+    let primaryLoaded=false;
     try{
-      const[a,b,d,gal,ln]=await Promise.all([
-        supabase.from('character').select('*').order('id').limit(1),
-        supabase.from('chapters').select('*').order('chapter_number'),
-        supabase.from('relationships').select('*').order('id'),
-        supabase.from('gallery').select('*').order('sort_order').order('created_at',{ascending:false}),
-        supabase.from('character_links').select('*').order('id')
+      // Character, chapters and relationships are critical for the first
+      // render. Gallery and links are optional and are loaded afterwards so
+      // a missing/blocked optional table cannot hold the whole application.
+      const[a,b,d]=await Promise.all([
+        archiveRequest(supabase.from('character').select('*').order('id').limit(1),'character'),
+        archiveRequest(supabase.from('chapters').select('*').order('chapter_number'),'chapters'),
+        archiveRequest(supabase.from('relationships').select('*').order('id'),'relationships')
       ]);
       if(a.error)throw a.error;
       if(b.error)throw b.error;
       if(d.error)throw d.error;
-      // Если данные не изменились — не обновляем стейт: иначе каждый
-      // focus вкладки и каждое realtime-событие перечискивают весь архив
-      // и ререндерят всё приложение зря.
-      const same=(p,n)=>p===n||(p!=null&&n!=null&&JSON.stringify(p)===JSON.stringify(n));
       const nextC=a.data?.[0]?displayCharacter(a.data[0]):null;
       const nextCh=Array.isArray(b.data)?b.data:[];
       const nextR=Array.isArray(d.data)?d.data:[];
       setC(prev=>same(prev,nextC)?prev:nextC);
       setCh(prev=>same(prev,nextCh)?prev:nextCh);
       setR(prev=>same(prev,nextR)?prev:nextR);
-      // Отсутствие таблицы gallery не должно ломать весь архив.
-      if(gal.error){console.warn('[archive] gallery:',gal.error.message);setG(prev=>same(prev,[])?prev:[])}
-      else{const nextG=Array.isArray(gal.data)?gal.data:[];setG(prev=>same(prev,nextG)?prev:nextG)}
-      // character_links может отсутствовать в старых БД — предупреждаем, не падаем.
-      if(ln.error){console.warn('[archive] character_links:',ln.error.message);setLk(prev=>same(prev,[])?prev:[])}
-      else{const nextLk=Array.isArray(ln.data)?ln.data:[];setLk(prev=>same(prev,nextLk)?prev:nextLk)}
-    }catch(e){setError(e.message||'Не удалось загрузить архив.')}
+      primaryLoaded=true;
+    }catch(e){setError(archiveError(e))}
     finally{setLoading(false);setLoaded(true)}
+
+    if(!primaryLoaded)return;
+    // Не задерживаем первый экран из-за gallery/character_links. Эти данные
+    // появятся сразу после ответа и не влияют на открытие основных страниц.
+    Promise.all([
+      archiveRequest(supabase.from('gallery').select('*').order('sort_order').order('created_at',{ascending:false}),'gallery').catch(error=>({error})),
+      archiveRequest(supabase.from('character_links').select('*').order('id'),'character_links').catch(error=>({error}))
+    ]).then(([gal,ln])=>{
+      // Отсутствие таблицы gallery не должно ломать архив и не должно
+      // стирать уже показанные данные при временной сетевой ошибке.
+      if(gal.error)console.warn('[archive] gallery:',gal.error.message||gal.error);
+      else{const nextG=Array.isArray(gal.data)?gal.data:[];setG(prev=>same(prev,nextG)?prev:nextG)}
+      // character_links может отсутствовать в старых БД — это необязательный
+      // модуль, поэтому основная страница всё равно остаётся доступной.
+      if(ln.error)console.warn('[archive] character_links:',ln.error.message||ln.error);
+      else{const nextLk=Array.isArray(ln.data)?ln.data:[];setLk(prev=>same(prev,nextLk)?prev:nextLk)}
+    });
   };
   useEffect(()=>{
     load();
@@ -301,7 +355,7 @@ function Cursor(){
 function TypeLine({text,delay=0}){const[out,setOut]=useState('');useEffect(()=>{let i=0;const t=setTimeout(()=>{const id=setInterval(()=>{setOut(text.slice(0,++i));if(i>=text.length)clearInterval(id)},28)},delay);return()=>clearTimeout(t)},[text,delay]);return<span>{out}<i className="type-caret">▌</i></span>}
 function TerminalTicker(){const messages=['ARCHIVE LINK STABLE','FORCE SIGNATURE // LOW INTENSITY','JEDI TEMPLE DATABASE // SA-001','VISUAL RECORDS INDEXED'];const[i,setI]=useState(0);useEffect(()=>{const t=setInterval(()=>setI(x=>(x+1)%messages.length),4200);return()=>clearInterval(t)},[]);return<div className="terminal-ticker"><span>SYS://</span><TypeLine text={messages[i]}/></div>}
 
-function Layout({error='',children}){
+function Layout({error='',onRetry,children}){
   const[open,setOpen]=useState(false);
   const[forceMode,setForceMode]=useState(false);const[theme,setTheme]=useState(()=>localStorage.getItem('archive-theme')||'jedi');
   const{pathname}=useLocation();
@@ -322,10 +376,31 @@ function Layout({error='',children}){
       keys.push(e.key);
       if(keys.slice(-konami.length).join()===konami.join()){setForceMode(v=>!v);keys.length=0}
     };
-    const scroll=()=>{const d=document.documentElement;document.documentElement.style.setProperty('--read',`${Math.min(100,Math.max(0,scrollY/(d.scrollHeight-innerHeight||1)*100))}%`)};
+    let progressRaf=0,scrollStopTimer=0;
+    const paintProgress=()=>{
+      progressRaf=0;
+      const d=document.documentElement;
+      const max=d.scrollHeight-window.innerHeight;
+      const progress=max>0?Math.min(100,Math.max(0,(window.scrollY/max)*100)):0;
+      d.style.setProperty('--read',`${progress}%`);
+    };
+    const scroll=()=>{
+      // Не пересчитываем layout на каждое событие wheel/touchmove и
+      // временно ставим декоративные анимации на паузу — контент остаётся
+      // плавным даже на длинных страницах админки.
+      document.documentElement.classList.add('is-scrolling');
+      if(!progressRaf)progressRaf=requestAnimationFrame(paintProgress);
+      clearTimeout(scrollStopTimer);
+      scrollStopTimer=setTimeout(()=>document.documentElement.classList.remove('is-scrolling'),140);
+    };
     const click=playBlip;
-    window.addEventListener('pointermove',move);window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);scroll();
-    return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('keydown',key);window.removeEventListener('scroll',scroll);document.removeEventListener('click',click)};
+    window.addEventListener('pointermove',move,{passive:true});window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);paintProgress();
+    return()=>{
+      window.removeEventListener('pointermove',move);window.removeEventListener('keydown',key);window.removeEventListener('scroll',scroll);document.removeEventListener('click',click);
+      if(progressRaf)cancelAnimationFrame(progressRaf);
+      clearTimeout(scrollStopTimer);
+      document.documentElement.classList.remove('is-scrolling');
+    };
   },[]);
   const links=[['/','Главная'],['/character','Персонаж'],['/history','История'],['/relationships','Взаимоотношения'],['/gallery','Галерея']];
   return<div className={`shell ${forceMode?'force-mode':''} theme-${theme}`}>
@@ -336,7 +411,7 @@ function Layout({error='',children}){
       <nav className={open?'open':''}>{links.map(([to,l])=><NavLink key={to} to={to} onClick={()=>setOpen(false)}>{l}</NavLink>)}</nav>
     </header>
     <main>
-      {error&&<div className="db-error"><Terminal size={14}/> ОШИБКА БАЗЫ ДАННЫХ // {error}</div>}
+      {error&&<div className="db-error"><Terminal size={14}/><span>ОШИБКА БАЗЫ ДАННЫХ // {error}</span>{onRetry&&<button type="button" className="ghost" onClick={onRetry}><RefreshCw size={13}/> ПОВТОРИТЬ</button>}</div>}
       <div className="route-stage" key={pathname}>{children}</div>
     </main>
     <footer>
@@ -426,11 +501,8 @@ function SignalDashboard({ch,r,g,links=[]}){
 function computeNodePositions(relations){
   const groups={jedi:[],family:[],ally:[],other:[]};
   relations.forEach(x=>{
-    const g=String(x.group_tag||'').toLowerCase();
-    if(g==='jedi'||/джедай/i.test(x.role||''))groups.jedi.push(x);
-    else if(g==='family'||/семь|отец|мать|брат|сестр/i.test(x.role||''))groups.family.push(x);
-    else if(g==='ally'||/союз|друг/i.test(x.relation||''))groups.ally.push(x);
-    else groups.other.push(x);
+    const group=relationGroup(x);
+    groups[group].push(x);
   });
   // Раскладка по секторам:
   //  - семья — вверху (угол -90°),
@@ -444,20 +516,38 @@ function computeNodePositions(relations){
     const radius=37;
     list.forEach((x,i)=>{
       const px=Number(x.pos_x),py=Number(x.pos_y);
-      if(Number.isFinite(px)&&Number.isFinite(py)&&px>0&&py>0){placed.set(x.id,{...x,x:px,y:py});return}
+      const hasManualPosition=x.pos_x!==null&&x.pos_x!==undefined&&x.pos_x!==''&&x.pos_y!==null&&x.pos_y!==undefined&&x.pos_y!==''&&Number.isFinite(px)&&Number.isFinite(py)&&px>=0&&px<=100&&py>=0&&py<=100;
+      if(hasManualPosition){placed.set(x.id,{...x,group_tag:key,x:px,y:py});return}
       const angle=(s.start+(list.length===1?s.span/2:(s.span/(list.length-1||1))*i))*Math.PI/180;
-      placed.set(x.id,{...x,x:50+radius*Math.cos(angle),y:50+radius*Math.sin(angle)});
+      placed.set(x.id,{...x,group_tag:key,x:50+radius*Math.cos(angle),y:50+radius*Math.sin(angle)});
     });
   });
   return Array.from(placed.values());
 }
+// Таблица character_links хранит неориентированные связи в одном порядке.
+// Сравниваем числовые id как числа, иначе строковая сортировка ставит 10
+// перед 2 и нарушает ограничение from_id < to_id в Supabase.
+function canonicalLinkPair(a,b){
+  const left=String(a),right=String(b);
+  const leftNumber=Number(a),rightNumber=Number(b);
+  if(Number.isFinite(leftNumber)&&Number.isFinite(rightNumber)){
+    if(leftNumber<rightNumber)return[left,right];
+    if(leftNumber>rightNumber)return[right,left];
+  }
+  return left.localeCompare(right,undefined,{numeric:true,sensitivity:'base'})<=0?[left,right]:[right,left];
+}
+function sameLinkPair(a,b,c,d){
+  const first=canonicalLinkPair(a,b),second=canonicalLinkPair(c,d);
+  return first[0]===second[0]&&first[1]===second[1];
+}
+
 // Строит список рёбер карты: Сера связан со всеми + рёбра из character_links.
 function buildEdges(nodes,links=[]){
   const edges=[];
   const seen=new Set();
   const add=(a,b,kind)=>{
-    if(a===b)return;
-    const k=[a,b].sort((x,y)=>String(x).localeCompare(String(y))).join('|');
+    if(String(a)===String(b))return;
+    const pair=canonicalLinkPair(a,b),k=pair.join('|');
     if(seen.has(k))return;
     seen.add(k);edges.push({from:a,to:b,kind});
   };
@@ -795,15 +885,22 @@ function NetworkEditor({relationships,links,isLinked,toggleLink,onNodeDragStart,
 }
 
 function AdminPanel({archive}){
-  const{character,chapters,relationships,gallery,reload}=archive;
+  const{character,chapters,relationships,gallery,reload,setRelationships}=archive;
   const nav=useNavigate(),location=useLocation();
   const initialTab=new URLSearchParams(location.search).get('tab');
   const[tab,setTab]=useState(['character','chapters','relations','network','gallery'].includes(initialTab)?initialTab:'character');
   const[networkFilter,setNetworkFilter]=useState('all');
   const[draggingNode,setDraggingNode]=useState(null); // id
   const networkStageRef=useRef(null);
+  const dragPointerRef=useRef(null);
+  const dragPositionRef=useRef(null);
   const[busy,setBusy]=useState(false),[msg,setMsg]=useState(null),[confirmState,setConfirmState]=useState(null),[pendingTab,setPendingTab]=useState('');
-  const[form,setForm]=useState({...EMPTY_CHARACTER});
+  // Панель монтируется уже после загрузки архива, поэтому существующую
+  // запись персонажа можно сразу положить в форму. Раньше форма всегда
+  // начиналась пустой и считалась «грязной», из-за чего эффект синхронизации
+  // сам себя блокировал до ручного перехода на другую вкладку.
+  const[form,setForm]=useState(()=>character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER});
+  const characterHydrationRef=useRef(character?.id??null);
   const[chForm,setChForm]=useState({...EMPTY_CHAPTER});
   const[relForm,setRelForm]=useState({...EMPTY_RELATION});
   const[galForm,setGalForm]=useState({...EMPTY_GALLERY});
@@ -835,8 +932,18 @@ function AdminPanel({archive}){
   const dirty={character:!formEqual(only(form,CHAR_FIELDS),only(characterBase,CHAR_FIELDS)),chapters:!formEqual(only(chForm,CH_FIELDS),only(chapterBase,CH_FIELDS)),relations:!formEqual(only(relForm,REL_FIELDS),only(relationBase,REL_FIELDS)),gallery:!formEqual(only(galForm,GAL_FIELDS),only(galleryBase,GAL_FIELDS))};
   const anyDirty=Object.values(dirty).some(Boolean);
 
-  // Внешний reload не стирает начатое редактирование персонажа.
-  useEffect(()=>{if(!dirty.character)setForm(character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER})},[character]);
+  // Внешний reload не стирает начатое редактирование персонажа, но
+  // подхватывает запись, если она появилась после первого рендера.
+  useEffect(()=>{
+    const id=character?.id??null;
+    const next=character?{...EMPTY_CHARACTER,...character,holo_effect:character.holo_effect!==false}:{...EMPTY_CHARACTER};
+    if(characterHydrationRef.current!==id){
+      characterHydrationRef.current=id;
+      setForm(next);
+      return;
+    }
+    if(!dirty.character)setForm(next);
+  },[character,dirty.character]);
   useEffect(()=>{
     if(!draftsReady)return;
     const timers=[];
@@ -909,7 +1016,7 @@ function AdminPanel({archive}){
   const duplicateChapter=!!chForm.chapter_number&&chapters.some(x=>Number(x.chapter_number)===Number(chForm.chapter_number)&&x.id!==chForm.id);
   const saveChapter=async e=>{e.preventDefault();const number=Number(chForm.chapter_number)||nextChapterNumber;if(duplicateChapter)return notify(`Номер главы ${number} уже используется. Выберите другой.`,`err`);const payload={chapter_number:number,title:chForm.title||'',content:chForm.content||'',cover_image:chForm.cover_image||'',published:!!chForm.published,holo_effect:chForm.holo_effect!==false};const old=chapters.find(x=>x.id===chForm.id);const res=await run(()=>writeResilient(p=>chForm.id?supabase.from('chapters').update(p).eq('id',chForm.id).select():supabase.from('chapters').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Глава не найдена или изменение заблокировано RLS.');return x}),chForm.id?'Глава обновлена.':'Глава добавлена.');if(res){saveAndCleanupOld(old?.cover_image,payload.cover_image);finishUpload('chapters',payload.cover_image);clearDraft('chapters');if(!chForm.id)setChForm({...EMPTY_CHAPTER})}};
   const togglePublish=x=>run(()=>supabase.from('chapters').update({published:!(x.published!==false)}).eq('id',x.id).select().then(r=>{if(r.error)throw r.error;if(!r.data?.length)throw new Error('Глава не найдена или изменение заблокировано RLS.');return r}),x.published!==false?'Глава скрыта из истории.':'Глава снова опубликована.');
-  const saveRelation=async e=>{e.preventDefault();const payload={name:relForm.name||'',role:relForm.role||'',relation:relForm.relation||'',quote:relForm.quote||'',image_url:relForm.image_url||'',holo_effect:relForm.holo_effect!==false,group_tag:relForm.group_tag||'ally',pos_x:relForm.pos_x===''||relForm.pos_x==null?null:Number(relForm.pos_x),pos_y:relForm.pos_y===''||relForm.pos_y==null?null:Number(relForm.pos_y)};const old=relationships.find(x=>x.id===relForm.id);const res=await run(()=>writeResilient(p=>relForm.id?supabase.from('relationships').update(p).eq('id',relForm.id).select():supabase.from('relationships').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Связь не найдена или изменение заблокировано RLS.');return x}),relForm.id?'Связь обновлена.':'Связь добавлена.');if(res){saveAndCleanupOld(old?.image_url,payload.image_url);finishUpload('relations',payload.image_url);clearDraft('relations');if(!relForm.id)setRelForm({...EMPTY_RELATION})}};
+  const saveRelation=async e=>{e.preventDefault();const payload={name:relForm.name||'',role:relForm.role||'',relation:relForm.relation||'',quote:relForm.quote||'',image_url:relForm.image_url||'',holo_effect:relForm.holo_effect!==false,group_tag:normalizeGroup(relForm.group_tag||'ally'),pos_x:relForm.pos_x===''||relForm.pos_x==null?null:Number(relForm.pos_x),pos_y:relForm.pos_y===''||relForm.pos_y==null?null:Number(relForm.pos_y)};const old=relationships.find(x=>x.id===relForm.id);const res=await run(()=>writeResilient(p=>relForm.id?supabase.from('relationships').update(p).eq('id',relForm.id).select():supabase.from('relationships').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Связь не найдена или изменение заблокировано RLS.');return x}),relForm.id?'Связь обновлена.':'Связь добавлена.');if(res){saveAndCleanupOld(old?.image_url,payload.image_url);finishUpload('relations',payload.image_url);clearDraft('relations');if(!relForm.id)setRelForm({...EMPTY_RELATION})}};
   const saveGallery=async e=>{e.preventDefault();const payload={title:galForm.title||'',caption:galForm.caption||'',image_url:galForm.image_url||'',sort_order:Number(galForm.sort_order)||0,holo_effect:galForm.holo_effect!==false};const old=gallery.find(x=>x.id===galForm.id);const res=await run(()=>writeResilient(p=>galForm.id?supabase.from('gallery').update(p).eq('id',galForm.id).select():supabase.from('gallery').insert(p).select(),payload).then(x=>{if(x.error)throw x.error;if(!x.data?.length)throw new Error('Изображение не найдено или изменение заблокировано RLS.');return x}),galForm.id?'Изображение обновлено.':'Изображение добавлено.');if(res){saveAndCleanupOld(old?.image_url,payload.image_url);finishUpload('gallery',payload.image_url);clearDraft('gallery');if(!galForm.id)setGalForm({...EMPTY_GALLERY})}};
 
   const remove=(table,id,label,item)=>requestConfirm(`Точно удалить ${label}? Данные можно вернуть в течение нескольких секунд.`,async()=>{const res=await run(()=>supabase.from(table).delete().eq('id',id).select(),`${label[0].toUpperCase()+label.slice(1)} удалена.`);if(res){const timer=setTimeout(()=>cleanupStorageUrl(item?.image_url||item?.cover_image),7000);notify(`${label[0].toUpperCase()+label.slice(1)} удалена.`, 'ok','',async()=>{clearTimeout(timer);const restored={...item};delete restored.created_at;const back=await run(()=>supabase.from(table).insert(restored).select(),`${label[0].toUpperCase()+label.slice(1)} восстановлена.`);if(back)await reload()})}});
@@ -921,7 +1028,7 @@ function AdminPanel({archive}){
   const resetGallery=()=>{cancelUploads('gallery');setGalForm({...EMPTY_GALLERY});clearDraft('gallery');setEditTarget(null)};
   const resetActive=()=>{if(tab==='character')resetCharacter();else if(tab==='chapters')resetChapter();else if(tab==='relations')resetRelation();else if(tab==='gallery')resetGallery()};
   const editChapter=x=>{setChForm({id:x.id,chapter_number:x.chapter_number??'',title:x.title||'',content:x.content||'',cover_image:x.cover_image||'',published:x.published!==false,holo_effect:x.holo_effect!==false});setEditTarget(x.id);requestAnimationFrame(()=>editorRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))};
-  const editRelation=x=>{setRelForm({id:x.id,name:x.name||'',role:x.role||'',relation:x.relation||'',quote:x.quote||'',image_url:x.image_url||'',holo_effect:x.holo_effect!==false,pos_x:x.pos_x??null,pos_y:x.pos_y??null,group_tag:x.group_tag||'ally'});setEditTarget(x.id);requestAnimationFrame(()=>editorRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))};
+  const editRelation=x=>{setRelForm({id:x.id,name:x.name||'',role:x.role||'',relation:x.relation||'',quote:x.quote||'',image_url:x.image_url||'',holo_effect:x.holo_effect!==false,pos_x:x.pos_x??null,pos_y:x.pos_y??null,group_tag:relationGroup(x)});setEditTarget(x.id);requestAnimationFrame(()=>editorRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))};
   const editGallery=x=>{setGalForm({id:x.id,title:x.title||'',caption:x.caption||x.description||'',image_url:x.image_url||'',sort_order:x.sort_order??0,holo_effect:x.holo_effect!==false});setEditTarget(x.id);requestAnimationFrame(()=>editorRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))};
   const goList=()=>listRef.current?.scrollIntoView({behavior:'smooth',block:'start'});
   const exportData=()=>{const data={exportedAt:new Date().toISOString(),character:character?[character]:[],chapters,relationships, gallery,character_links:links};const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`archive-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href);notify('JSON-резервная копия скачана.')};
@@ -936,15 +1043,16 @@ function AdminPanel({archive}){
   // -------- Сеть связей --------
   const{links}=archive;
   const isLinked=(a,b)=>{
-    if(a===b)return false;
-    const[lo,hi]=[String(a),String(b)].sort((x,y)=>x.localeCompare(y));
-    return links.some(l=>String(l.from_id)===lo&&String(l.to_id)===hi);
+    if(String(a)===String(b))return false;
+    return links.some(l=>sameLinkPair(l.from_id,l.to_id,a,b));
   };
   const toggleLink=async(a,b)=>{
     if(!supabase)return notify('Supabase не подключён.','err');
-    const[lo,hi]=[a,b].map(String).sort((x,y)=>x.localeCompare(y));
+    const[lo,hi]=canonicalLinkPair(a,b);
     if(lo===hi)return;
-    const existing=links.find(l=>String(l.from_id)===lo&&String(l.to_id)===hi);
+    // Учитываем и старую запись в обратном порядке, чтобы интерфейс не
+    // создавал дубликат при миграции данных из другой версии схемы.
+    const existing=links.find(l=>sameLinkPair(l.from_id,l.to_id,lo,hi));
     setBusy(true);
     try{
       if(existing){
@@ -963,15 +1071,20 @@ function AdminPanel({archive}){
   };
   const saveNodePosition=async(id,x,y)=>{
     if(!supabase)return;
+    setBusy(true);
     try{
-      const r=await supabase.from('relationships').update({pos_x:Math.max(0,Math.min(100,x)),pos_y:Math.max(0,Math.min(100,y))}).eq('id',id).select();
+      const payload={pos_x:Math.max(0,Math.min(100,Number(x))),pos_y:Math.max(0,Math.min(100,Number(y)))};
+      const r=await supabase.from('relationships').update(payload).eq('id',id).select();
       if(r.error)throw r.error;
+      if(!r.data?.length)throw new Error('Узел не найден или координаты заблокированы RLS.');
+      notify('Позиция узла сохранена.');
       await reload();
-    }catch(e){console.warn('[network] save pos:',e.message||e)}
+    }catch(e){notify('Ошибка сохранения позиции: '+(e.message||e),'err',e.message||String(e))}
+    finally{setBusy(false)}
   };
   const autoArrange=async(groupKey)=>{
     if(!supabase)return notify('Supabase не подключён.','err');
-    const list=groupKey==='all'?relationships:relationships.filter(x=>(x.group_tag||'other')===groupKey);
+    const list=groupKey==='all'?relationships:relationships.filter(x=>normalizeGroup(x.group_tag)===groupKey);
     if(!list.length)return notify('Нет узлов для расстановки.','err');
     setBusy(true);
     try{
@@ -988,7 +1101,7 @@ function AdminPanel({archive}){
   };
   const resetPositions=async(groupKey)=>{
     if(!supabase)return notify('Supabase не подключён.','err');
-    const list=groupKey==='all'?relationships:relationships.filter(x=>(x.group_tag||'other')===groupKey);
+    const list=groupKey==='all'?relationships:relationships.filter(x=>normalizeGroup(x.group_tag)===groupKey);
     if(!list.length)return;
     setBusy(true);
     try{
@@ -999,35 +1112,62 @@ function AdminPanel({archive}){
     }catch(e){notify('Ошибка сброса: '+(e.message||e),'err')}
     finally{setBusy(false)}
   };
+  const positionFromPointer=(event,stage)=>{
+    const rect=stage.getBoundingClientRect();
+    if(!rect.width||!rect.height)return null;
+    return{
+      x:Number(Math.max(0,Math.min(100,((event.clientX-rect.left)/rect.width)*100)).toFixed(2)),
+      y:Number(Math.max(0,Math.min(100,((event.clientY-rect.top)/rect.height)*100)).toFixed(2))
+    };
+  };
   const onNodeDragStart=(e,id)=>{
-    if(e.button!==0)return;
+    // PointerEvent.button is 0 for the primary mouse button and touch.
+    if(e.button!==0||busy)return;
+    const stage=networkStageRef.current;
+    if(!stage)return;
     e.preventDefault();
-    setDraggingNode(id);
+    e.stopPropagation();
+    dragPointerRef.current=e.pointerId;
+    const position=positionFromPointer(e,stage);
+    if(position){
+      dragPositionRef.current={id:String(id),...position};
+      // Сразу показываем точку на месте нажатия, а не ждём первого move.
+      setRelationships(list=>list.map(n=>String(n.id)===String(id)?{...n,pos_x:position.x,pos_y:position.y}:n));
+    }
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    setDraggingNode(String(id));
   };
   useEffect(()=>{
-    if(!draggingNode)return;
+    if(draggingNode===null)return;
     const stage=networkStageRef.current;
     if(!stage)return;
     const move=ev=>{
-      const rect=stage.getBoundingClientRect();
-      const x=Math.max(0,Math.min(100,((ev.clientX-rect.left)/rect.width)*100));
-      const y=Math.max(0,Math.min(100,((ev.clientY-rect.top)/rect.height)*100));
+      if(dragPointerRef.current!==null&&ev.pointerId!==dragPointerRef.current)return;
+      ev.preventDefault();
+      const position=positionFromPointer(ev,stage);
+      if(!position)return;
+      dragPositionRef.current={id:String(draggingNode),...position};
       // Оптимистично обновляем позицию в relationships для живого предпросмотра.
-      setRelationships(list=>list.map(n=>String(n.id)===String(draggingNode)?{...n,pos_x:Number(x.toFixed(2)),pos_y:Number(y.toFixed(2))}:n));
+      setRelationships(list=>list.map(n=>String(n.id)===String(draggingNode)?{...n,pos_x:position.x,pos_y:position.y}:n));
     };
-    const up=()=>{
-      const node=relationships.find(n=>String(n.id)===String(draggingNode));
+    const finish=ev=>{
+      if(ev&&dragPointerRef.current!==null&&ev.pointerId!==dragPointerRef.current)return;
+      const position=dragPositionRef.current;
+      dragPointerRef.current=null;
+      dragPositionRef.current=null;
       setDraggingNode(null);
-      if(node&&node.pos_x!=null&&node.pos_y!=null)saveNodePosition(draggingNode,node.pos_x,node.pos_y);
+      if(position)saveNodePosition(position.id,position.x,position.y);
     };
-    window.addEventListener('pointermove',move);
-    window.addEventListener('pointerup',up);
-    window.addEventListener('pointercancel',up);
-    return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);window.removeEventListener('pointercancel',up)};
-  },[draggingNode,relationships]);
+    window.addEventListener('pointermove',move,{passive:false});
+    window.addEventListener('pointerup',finish);
+    window.addEventListener('pointercancel',finish);
+    return()=>{
+      window.removeEventListener('pointermove',move);
+      window.removeEventListener('pointerup',finish);
+      window.removeEventListener('pointercancel',finish);
+    };
+  },[draggingNode]);
 
-  // Фильтр для списка узлов.
-  const filteredNetwork=relationships.filter(x=>networkFilter==='all'||(x.group_tag||'other')===networkFilter);
   const peerLinkCount=links.length;
 
   const tabs=[['character','ПЕРСОНАЖ',<UserRound size={15}/>,null],['chapters','ГЛАВЫ',<BookOpen size={15}/>,filteredChapters.length],['relations','СВЯЗИ',<Database size={15}/>,filteredRelations.length],['network','СЕТЬ СВЯЗЕЙ',<GitBranch size={15}/>,peerLinkCount],['gallery','ГАЛЕРЕЯ',<Images size={15}/>,filteredGallery.length]];
@@ -1045,7 +1185,7 @@ function AdminPanel({archive}){
 
     {tab==='chapters'&&<div className="admin-columns"><Holo className="editor" {...editorProps}><div className="editor-head"><div><p className="kicker">CONTENT MANAGEMENT</p><h2>{chForm.id?'РЕДАКТИРОВАНИЕ ГЛАВЫ':'НОВАЯ ГЛАВА'}</h2></div>{chForm.id?<Edit3/>:<Plus/>}</div><form onSubmit={saveChapter}><div className="form-grid"><Field label="Номер главы" type="number" min="0" required value={chForm.chapter_number||nextChapterNumber} onChange={v=>setChForm({...chForm,chapter_number:v})}/><Field label="Название" required value={chForm.title} onChange={v=>setChForm({...chForm,title:v})}/></div>{duplicateChapter&&<div className="inline-error"><AlertTriangle size={14}/> Этот номер главы уже используется.</div>}<TextField label="Текст главы" value={chForm.content} onChange={v=>setChForm({...chForm,content:v})}/><ChapterPreview chapter={chForm}/><div className="field"><label>Обложка главы</label><UploadField value={chForm.cover_image} onChange={v=>setChForm({...chForm,cover_image:v})} folder="chapters" formKey="chapters" onUpload={handleUpload}/></div>{chForm.cover_image&&<Frame holo={chForm.holo_effect!==false} className="preview"><SafeImage src={chForm.cover_image} alt="Обложка"/></Frame>}<label className="check"><input type="checkbox" checked={chForm.holo_effect!==false} onChange={e=>setChForm({...chForm,holo_effect:e.target.checked})}/> Голопроекция обложки</label><label className="check"><input type="checkbox" checked={chForm.published} onChange={e=>setChForm({...chForm,published:e.target.checked})}/> Публиковать главу</label><SaveBar dirty={dirty.chapters} onSave={()=>document.querySelector('.editor form')?.requestSubmit()}/><div className="editor-actions"><button className="btn" disabled={busy}>{chForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ ГЛАВУ</>}</button>{chForm.id&&<button type="button" className="ghost" onClick={resetChapter}>ОТМЕНА</button>}{chForm.id&&<button type="button" className="ghost mobile-only" onClick={goList}>К СПИСКУ</button>}</div></form></Holo><div className="list" ref={listRef}>{filteredChapters.map(x=><Holo className={`list-item ${editTarget===x.id?'edit-highlight':''}`} key={x.id}><div><span className="list-number">{x.chapter_number!=null?String(x.chapter_number).padStart(2,'0'):'—'}</span><div><b>{x.title||'Без названия'}</b><small className={x.published===false?'st-hidden':'st-on'}>{x.published===false?'СКРЫТА':'ОПУБЛИКОВАНА'}</small></div></div><div className="item-actions"><Link className="ghost" title="Открыть на публичной странице" to={`/history?chapter=${encodeURIComponent(x.id)}#chapter-${x.id}`}><ExternalLink size={14}/> ОТКРЫТЬ</Link><button className="ghost" title={x.published===false?'Опубликовать':'Скрыть'} onClick={()=>togglePublish(x)}>{x.published===false?<EyeOff size={14}/>:<Eye size={14}/>}</button><button className="ghost" title="Редактировать" onClick={()=>editChapter(x)}><Edit3 size={14}/></button><button className="danger" title="Удалить" onClick={()=>remove('chapters',x.id,'главу',x)}><Trash2 size={15}/></button></div></Holo>)}{!filteredChapters.length&&<Holo className="empty slim"><BookOpen/><p>По этому фильтру глав нет.</p></Holo>}</div></div>}
 
-    {tab==='relations'&&<div className="admin-columns"><Holo className="editor" {...editorProps}><div className="editor-head"><div><p className="kicker">RELATIONSHIP DATABASE</p><h2>{relForm.id?'РЕДАКТИРОВАНИЕ СВЯЗИ':'НОВАЯ СВЯЗЬ'}</h2></div>{relForm.id?<Edit3/>:<Plus/>}</div><form onSubmit={saveRelation}><div className="form-grid"><Field label="Имя" required value={relForm.name} onChange={v=>setRelForm({...relForm,name:v})}/><Field label="Роль" value={relForm.role} onChange={v=>setRelForm({...relForm,role:v})}/></div><div className="field"><label>Группа (сектор на карте)</label><select className="group-select" value={relForm.group_tag||'ally'} onChange={e=>setRelForm({...relForm,group_tag:e.target.value})}>{RELATION_GROUPS.map(([k,label])=><option key={k} value={k}>{label}</option>)}</select></div><RelationTypePicker value={relForm.relation} onChange={v=>setRelForm({...relForm,relation:v})}/><div className="form-grid"><Field label="X-координата на карте (0–100)" type="number" min="0" max="100" value={relForm.pos_x==null?'':relForm.pos_x} onChange={v=>setRelForm({...relForm,pos_x:v})}/><Field label="Y-координата на карте (0–100)" type="number" min="0" max="100" value={relForm.pos_y==null?'':relForm.pos_y} onChange={v=>setRelForm({...relForm,pos_y:v})}/></div><small className="field-hint">Оставьте пустыми для автоматической раскладки по сектору группы. Или расставьте вручную на вкладке «Сеть связей» перетаскиванием.</small><TextField label="Цитата" rows="3" value={relForm.quote} onChange={v=>setRelForm({...relForm,quote:v})}/><div className="field"><label>Фотография связи</label><UploadField value={relForm.image_url} onChange={v=>setRelForm({...relForm,image_url:v})} folder="relationships" formKey="relations" onUpload={handleUpload}/></div>{relForm.image_url&&<Frame holo={relForm.holo_effect!==false} className="preview"><SafeImage src={relForm.image_url} alt="Предпросмотр"/></Frame>}<label className="check"><input type="checkbox" checked={relForm.holo_effect!==false} onChange={e=>setRelForm({...relForm,holo_effect:e.target.checked})}/> Голопроекция</label><SaveBar dirty={dirty.relations} onSave={()=>document.querySelector('.editor form')?.requestSubmit()}/><div className="editor-actions"><button className="btn" disabled={busy}>{relForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ СВЯЗЬ</>}</button>{relForm.id&&<><button type="button" className="ghost" onClick={resetRelation}>ОТМЕНА</button><button type="button" className="ghost mobile-only" onClick={goList}>К СПИСКУ</button></>}</div></form></Holo><div className="list" ref={listRef}>{filteredRelations.map(x=><Holo className={`list-item ${editTarget===x.id?'edit-highlight':''}`} key={x.id}><div>{x.image_url?<Frame holo={x.holo_effect!==false} className="thumb"><SafeImage src={x.image_url} alt=""/></Frame>:<span className="avatar mini">{String(x.name||'?')[0]}</span>}<div><b>{x.name}</b><small>{x.role} • <span className="group-chip" data-group={x.group_tag||'other'}>{groupMeta(x.group_tag)[1]}</span></small><RelationTags value={x.relation} compact/></div></div><div className="item-actions"><button className="ghost" title="Редактировать" onClick={()=>editRelation(x)}><Edit3 size={14}/></button><button className="danger" title="Удалить" onClick={()=>remove('relationships',x.id,'связь',x)}><Trash2 size={15}/></button></div></Holo>)}{!filteredRelations.length&&<Holo className="empty slim"><UserRound/><p>По этому фильтру связей нет.</p></Holo>}</div></div>}
+    {tab==='relations'&&<div className="admin-columns"><Holo className="editor" {...editorProps}><div className="editor-head"><div><p className="kicker">RELATIONSHIP DATABASE</p><h2>{relForm.id?'РЕДАКТИРОВАНИЕ СВЯЗИ':'НОВАЯ СВЯЗЬ'}</h2></div>{relForm.id?<Edit3/>:<Plus/>}</div><form onSubmit={saveRelation}><div className="form-grid"><Field label="Имя" required value={relForm.name} onChange={v=>setRelForm({...relForm,name:v})}/><Field label="Роль" value={relForm.role} onChange={v=>setRelForm({...relForm,role:v})}/></div><div className="field"><label>Группа (сектор на карте)</label><select className="group-select" value={relForm.group_tag||'ally'} onChange={e=>setRelForm({...relForm,group_tag:e.target.value})}>{RELATION_GROUPS.map(([k,label])=><option key={k} value={k}>{label}</option>)}</select></div><RelationTypePicker value={relForm.relation} onChange={v=>setRelForm({...relForm,relation:v})}/><div className="form-grid"><Field label="X-координата на карте (0–100)" type="number" min="0" max="100" value={relForm.pos_x==null?'':relForm.pos_x} onChange={v=>setRelForm({...relForm,pos_x:v})}/><Field label="Y-координата на карте (0–100)" type="number" min="0" max="100" value={relForm.pos_y==null?'':relForm.pos_y} onChange={v=>setRelForm({...relForm,pos_y:v})}/></div><small className="field-hint">Оставьте пустыми для автоматической раскладки по сектору группы. Или расставьте вручную на вкладке «Сеть связей» перетаскиванием.</small><TextField label="Цитата" rows="3" value={relForm.quote} onChange={v=>setRelForm({...relForm,quote:v})}/><div className="field"><label>Фотография связи</label><UploadField value={relForm.image_url} onChange={v=>setRelForm({...relForm,image_url:v})} folder="relationships" formKey="relations" onUpload={handleUpload}/></div>{relForm.image_url&&<Frame holo={relForm.holo_effect!==false} className="preview"><SafeImage src={relForm.image_url} alt="Предпросмотр"/></Frame>}<label className="check"><input type="checkbox" checked={relForm.holo_effect!==false} onChange={e=>setRelForm({...relForm,holo_effect:e.target.checked})}/> Голопроекция</label><SaveBar dirty={dirty.relations} onSave={()=>document.querySelector('.editor form')?.requestSubmit()}/><div className="editor-actions"><button className="btn" disabled={busy}>{relForm.id?<><Save size={16}/> СОХРАНИТЬ ИЗМЕНЕНИЯ</>:<><Plus size={16}/> ДОБАВИТЬ СВЯЗЬ</>}</button>{relForm.id&&<><button type="button" className="ghost" onClick={resetRelation}>ОТМЕНА</button><button type="button" className="ghost mobile-only" onClick={goList}>К СПИСКУ</button></>}</div></form></Holo><div className="list" ref={listRef}>{filteredRelations.map(x=><Holo className={`list-item ${editTarget===x.id?'edit-highlight':''}`} key={x.id}><div>{x.image_url?<Frame holo={x.holo_effect!==false} className="thumb"><SafeImage src={x.image_url} alt=""/></Frame>:<span className="avatar mini">{String(x.name||'?')[0]}</span>}<div><b>{x.name}</b><small>{x.role} • <span className="group-chip" data-group={relationGroup(x)}>{groupMeta(x.group_tag)[1]}</span></small><RelationTags value={x.relation} compact/></div></div><div className="item-actions"><button className="ghost" title="Редактировать" onClick={()=>editRelation(x)}><Edit3 size={14}/></button><button className="danger" title="Удалить" onClick={()=>remove('relationships',x.id,'связь',x)}><Trash2 size={15}/></button></div></Holo>)}{!filteredRelations.length&&<Holo className="empty slim"><UserRound/><p>По этому фильтру связей нет.</p></Holo>}</div></div>}
 
     {tab==='network'&&<NetworkEditor relationships={relationships} links={links} isLinked={isLinked} toggleLink={toggleLink} onNodeDragStart={onNodeDragStart} stageRef={networkStageRef} networkFilter={networkFilter} setNetworkFilter={setNetworkFilter} busy={busy} autoArrange={autoArrange} resetPositions={resetPositions}/>}
 
@@ -1078,7 +1218,7 @@ function App(){
   if(!archive.loaded)return<Layout>
     <Page title="Jedi Archives" sub="УСТАНОВКА СВЯЗИ"><div className="loading skeleton-loading"><div className="skeleton sk-title"/><div className="skeleton sk-panel"/><div className="skeleton sk-panel"/><p>ПОДКЛЮЧЕНИЕ К АРХИВУ…</p></div></Page>
   </Layout>;
-  return<Layout error={archive.error}>
+  return<Layout error={archive.error} onRetry={archive.reload}>
     <Routes>
       <Route path="/" element={<Home c={archive.character} ch={archive.chapters} r={archive.relationships} g={archive.gallery} links={archive.links}/>}/>
       <Route path="/character" element={<Character c={archive.character}/>}/>

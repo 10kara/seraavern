@@ -22,20 +22,34 @@ npm run dev
 - настраивает публичное чтение;
 - разрешает изменения авторизованному пользователю;
 - создаёт таблицу `gallery`, если её нет;
+- добавляет координаты узлов и таблицу `character_links` для связей между персонажами;
 - настраивает Storage policies для bucket `archive`.
 
-Bucket `archive` создайте как Public в Supabase Storage.
+Для уже настроенного проекта можно отдельно повторно выполнить `NETWORK_SCHEMA.sql` —
+это безопасная миграция тех же колонок и таблицы сети. Bucket `archive` создайте как Public в Supabase Storage.
 
 ## Таблицы
 `character`: id, name, first_name, last_name, species, age, height, homeworld, status, callsign, summary, appearance, personality, preferences, dislikes, motivation, image_url.
 
 `chapters`: id, created_at, title, chapter_number, content, cover_image, published.
 
-`relationships`: id, name, role, relation, quote.
+`relationships`: id, name, role, relation, quote, image_url, holo_effect,
+`pos_x`, `pos_y`, `group_tag`.
+
+`character_links`: id, from_id, to_id, link_type, note. `from_id` и `to_id`
+ссылаются на записи `relationships`; порядок пары хранится как `from_id < to_id`.
 
 `gallery`: id, created_at, title, caption, image_url, sort_order.
 
 Возраст и рост хранятся числовыми значениями. Интерфейс форматирует их как `3 стандартных года` и `72 см`.
+
+### Сеть персонажей
+В админ-панели откройте вкладку «Сеть связей»:
+1. В матрице отметьте пересечение двух персонажей, чтобы создать прямую связь между ними.
+2. Перетащите узел мышью по карте — координаты сохраняются в `relationships.pos_x` и `relationships.pos_y` после отпускания кнопки.
+3. «ПО КРУГУ» расставляет выбранную группу, а «АВТО» сбрасывает её координаты к секторной раскладке.
+На публичной странице «Взаимоотношения» голубые линии показывают связи с Серой,
+фиолетовые — связи между остальными персонажами.
 
 ## v7
 - улучшенная HoloPanel-разметка и фоновые HUD-линии;
