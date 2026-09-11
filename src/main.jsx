@@ -170,15 +170,22 @@ function useArchive(){
       if(a.error)throw a.error;
       if(b.error)throw b.error;
       if(d.error)throw d.error;
-      setC(a.data?.[0]?displayCharacter(a.data[0]):null);
-      setCh(Array.isArray(b.data)?b.data:[]);
-      setR(Array.isArray(d.data)?d.data:[]);
+      // Если данные не изменились — не обновляем стейт: иначе каждый
+      // focus вкладки и каждое realtime-событие перечискивают весь архив
+      // и ререндерят всё приложение зря.
+      const same=(p,n)=>p===n||(p!=null&&n!=null&&JSON.stringify(p)===JSON.stringify(n));
+      const nextC=a.data?.[0]?displayCharacter(a.data[0]):null;
+      const nextCh=Array.isArray(b.data)?b.data:[];
+      const nextR=Array.isArray(d.data)?d.data:[];
+      setC(prev=>same(prev,nextC)?prev:nextC);
+      setCh(prev=>same(prev,nextCh)?prev:nextCh);
+      setR(prev=>same(prev,nextR)?prev:nextR);
       // Отсутствие таблицы gallery не должно ломать весь архив.
-      if(gal.error){console.warn('[archive] gallery:',gal.error.message);setG([])}
-      else setG(Array.isArray(gal.data)?gal.data:[]);
+      if(gal.error){console.warn('[archive] gallery:',gal.error.message);setG(prev=>same(prev,[])?prev:[])}
+      else{const nextG=Array.isArray(gal.data)?gal.data:[];setG(prev=>same(prev,nextG)?prev:nextG)}
       // character_links может отсутствовать в старых БД — предупреждаем, не падаем.
-      if(ln.error){console.warn('[archive] character_links:',ln.error.message);setLk([])}
-      else setLk(Array.isArray(ln.data)?ln.data:[]);
+      if(ln.error){console.warn('[archive] character_links:',ln.error.message);setLk(prev=>same(prev,[])?prev:[])}
+      else{const nextLk=Array.isArray(ln.data)?ln.data:[];setLk(prev=>same(prev,nextLk)?prev:nextLk)}
     }catch(e){setError(e.message||'Не удалось загрузить архив.')}
     finally{setLoading(false);setLoaded(true)}
   };
@@ -205,6 +212,24 @@ function useArchive(){
    БАЗОВЫЕ КОМПОНЕНТЫ
    ============================================================ */
 function Background(){return<><div className="hud-grid"/><div className="hud-bars"><i/><i/><i/><i/></div><div className="holo-ambient"><i/><i/><i/></div><div className="holo-particles">{Array.from({length:18},(_,i)=><i key={i}/>)}</div><div className="scanline"/></>}
+
+// Один общий AudioContext: создание нового контекста на каждый клик
+// исчерпывает лимит браузера (16 шт. на страницу) и удерживает память.
+let audioCtx=null;
+function playBlip(){
+  try{
+    const A=window.AudioContext||window.webkitAudioContext;
+    if(!A)return;
+    if(!audioCtx)audioCtx=new A();
+    if(audioCtx.state==='suspended')audioCtx.resume();
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.frequency.value=520;
+    g.gain.setValueAtTime(.025,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+.06);
+    o.connect(g).connect(audioCtx.destination);
+    o.start();o.stop(audioCtx.currentTime+.06);
+  }catch{}
+}
 
 /* ============================================================
    ГОЛО-КУРСОР
@@ -298,7 +323,7 @@ function Layout({error='',children}){
       if(keys.slice(-konami.length).join()===konami.join()){setForceMode(v=>!v);keys.length=0}
     };
     const scroll=()=>{const d=document.documentElement;document.documentElement.style.setProperty('--read',`${Math.min(100,Math.max(0,scrollY/(d.scrollHeight-innerHeight||1)*100))}%`)};
-    const click=()=>{try{const A=window.AudioContext||window.webkitAudioContext;if(!A)return;const a=new A(),o=a.createOscillator(),g=a.createGain();o.frequency.value=520;g.gain.setValueAtTime(.025,a.currentTime);g.gain.exponentialRampToValueAtTime(.001,a.currentTime+.06);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+.06)}catch{}};
+    const click=playBlip;
     window.addEventListener('pointermove',move);window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);scroll();
     return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('keydown',key);window.removeEventListener('scroll',scroll);document.removeEventListener('click',click)};
   },[]);
@@ -447,7 +472,7 @@ function buildEdges(nodes,links=[]){
 function RelationshipConstellation({r,links=[]}){
   const nodes=computeNodePositions(r);
   const edges=buildEdges(nodes,links);
-  return<section className="constellation holo-panel" aria-label="Карта взаимоотношений"><div className="constellation-head"><div><p className="kicker">CONNECTIONS // FORCE MAP</p><h2>СЕТЬ СВЯЗЕЙ</h2></div><span><Crosshair size={13}/> {nodes.length} УЗЛОВ // {edges.length} СВЯЗЕЙ</span></div><div className="constellation-stage"><svg viewBox="0 0 100 100" aria-hidden="true"><defs><linearGradient id="linkGlow" x1="0" x2="1"><stop stopColor="#56bbff" stopOpacity=".12"/><stop offset=".5" stopColor="#56bbff" stopOpacity=".8"/><stop offset="1" stopColor="#ffc46b" stopOpacity=".12"/></linearGradient><linearGradient id="peerGlow" x1="0" x2="1"><stop stopColor="#b48aff" stopOpacity=".2"/><stop offset=".5" stopColor="#b48aff" stopOpacity=".75"/><stop offset="1" stopColor="#ffc46b" stopOpacity=".2"/></linearGradient></defs>{edges.map(e=>e.from==='core'
+  return<section className="constellation holo-panel" aria-label="Карта взаимоотношений"><div className="constellation-head"><div><p className="kicker">CONNECTIONS // FORCE MAP</p><h2>СЕТЬ СВЯЗЕЙ</h2></div><span><Crosshair size={13}/> {nodes.length} УЗЛОВ // {edges.length} СВЯЗЕЙ</span></div><div className="constellation-stage"><svg viewBox="0 0 100 100" aria-hidden="true" preserveAspectRatio="none"><defs><radialGradient id="gridGlow" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="rgba(86,187,255,.12)"/><stop offset="100%" stopColor="transparent"/></radialGradient><linearGradient id="linkGlow" x1="0" x2="1"><stop stopColor="#56bbff" stopOpacity=".12"/><stop offset=".5" stopColor="#56bbff" stopOpacity=".8"/><stop offset="1" stopColor="#ffc46b" stopOpacity=".12"/></linearGradient><linearGradient id="peerGlow" x1="0" x2="1"><stop stopColor="#b48aff" stopOpacity=".2"/><stop offset=".5" stopColor="#b48aff" stopOpacity=".75"/><stop offset="1" stopColor="#ffc46b" stopOpacity=".2"/></linearGradient></defs><circle cx="50" cy="50" r="37" fill="url(#gridGlow)" stroke="rgba(86,187,255,.15)" strokeDasharray="1.5 1.5"/><circle cx="50" cy="50" r="25" fill="none" stroke="rgba(86,187,255,.08)" strokeDasharray="1 1"/>{edges.map(e=>e.from==='core'
     ?<line key={`l-${e.from}-${e.to}`} x1="50" y1="50" x2={nodes.find(n=>String(n.id)===String(e.to))?.x} y2={nodes.find(n=>String(n.id)===String(e.to))?.y} className="link-sera"/>
     :<line key={`l-${e.from}-${e.to}`} x1={nodes.find(n=>String(n.id)===String(e.from))?.x} y1={nodes.find(n=>String(n.id)===String(e.from))?.y} x2={nodes.find(n=>String(n.id)===String(e.to))?.x} y2={nodes.find(n=>String(n.id)===String(e.to))?.y} className="link-peer"/>
   )}</svg><div className="constellation-center"><span className="constellation-core">SA</span><b>СЕРА</b><small>SA-001</small></div>{nodes.map(x=><div className="constellation-node" style={{left:`${x.x}%`,top:`${x.y}%`}} key={x.id} data-group={String(x.group_tag||'other')}><span>{String(x.name||'?')[0]}</span><b>{x.name}</b><small>{relationLabels(x.relation).slice(0,2).join(' • ')||x.role||'СВЯЗЬ'}</small></div>)}</div><div className="constellation-legend"><span><i className="legend-dot cyan"/> СЕРА ↔ УЗЕЛ</span><span><i className="legend-dot violet"/> МЕЖДУ ПЕРСОНАЖАМИ</span><span><ShieldCheck size={13}/> СИГНАЛ ПОДТВЕРЖДЁН</span></div></section>;
@@ -729,7 +754,7 @@ function NetworkEditor({relationships,links,isLinked,toggleLink,onNodeDragStart,
     <p className="network-hint">Перетаскивайте узлы мышью, чтобы расставить их вручную. Сера автоматически связан со всеми (голубые линии). Дополнительные связи между персонажами (фиолетовые) настраиваются в матрице ниже.</p>
     <div className="network-stage" ref={stageRef}>
       <svg viewBox="0 0 100 100" aria-hidden="true" preserveAspectRatio="none">
-        <defs><radialGradient id="gridGlow" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="rgba(86,187,255,.12)"/><stop offset="100%" stopColor="transparent"/></radialGradient></defs>
+        <defs><radialGradient id="gridGlow" cx="50%" cy="50%" r="50%"><stop offset="0%" stopColor="rgba(86,187,255,.12)"/><stop offset="100%" stopColor="transparent"/></radialGradient><linearGradient id="linkGlow" x1="0" x2="1"><stop stopColor="#56bbff" stopOpacity=".12"/><stop offset=".5" stopColor="#56bbff" stopOpacity=".8"/><stop offset="1" stopColor="#ffc46b" stopOpacity=".12"/></linearGradient><linearGradient id="peerGlow" x1="0" x2="1"><stop stopColor="#b48aff" stopOpacity=".2"/><stop offset=".5" stopColor="#b48aff" stopOpacity=".75"/><stop offset="1" stopColor="#ffc46b" stopOpacity=".2"/></linearGradient></defs>
         <circle cx="50" cy="50" r="37" fill="url(#gridGlow)" stroke="rgba(86,187,255,.15)" strokeDasharray="1.5 1.5"/>
         <circle cx="50" cy="50" r="25" fill="none" stroke="rgba(86,187,255,.08)" strokeDasharray="1 1"/>
         {edges.map(e=>{
