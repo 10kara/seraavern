@@ -170,15 +170,22 @@ function useArchive(){
       if(a.error)throw a.error;
       if(b.error)throw b.error;
       if(d.error)throw d.error;
-      setC(a.data?.[0]?displayCharacter(a.data[0]):null);
-      setCh(Array.isArray(b.data)?b.data:[]);
-      setR(Array.isArray(d.data)?d.data:[]);
+      // Если данные не изменились — не обновляем стейт: иначе каждый
+      // focus вкладки и каждое realtime-событие перечискивают весь архив
+      // и ререндерят всё приложение зря.
+      const same=(p,n)=>p===n||(p!=null&&n!=null&&JSON.stringify(p)===JSON.stringify(n));
+      const nextC=a.data?.[0]?displayCharacter(a.data[0]):null;
+      const nextCh=Array.isArray(b.data)?b.data:[];
+      const nextR=Array.isArray(d.data)?d.data:[];
+      setC(prev=>same(prev,nextC)?prev:nextC);
+      setCh(prev=>same(prev,nextCh)?prev:nextCh);
+      setR(prev=>same(prev,nextR)?prev:nextR);
       // Отсутствие таблицы gallery не должно ломать весь архив.
-      if(gal.error){console.warn('[archive] gallery:',gal.error.message);setG([])}
-      else setG(Array.isArray(gal.data)?gal.data:[]);
+      if(gal.error){console.warn('[archive] gallery:',gal.error.message);setG(prev=>same(prev,[])?prev:[])}
+      else{const nextG=Array.isArray(gal.data)?gal.data:[];setG(prev=>same(prev,nextG)?prev:nextG)}
       // character_links может отсутствовать в старых БД — предупреждаем, не падаем.
-      if(ln.error){console.warn('[archive] character_links:',ln.error.message);setLk([])}
-      else setLk(Array.isArray(ln.data)?ln.data:[]);
+      if(ln.error){console.warn('[archive] character_links:',ln.error.message);setLk(prev=>same(prev,[])?prev:[])}
+      else{const nextLk=Array.isArray(ln.data)?ln.data:[];setLk(prev=>same(prev,nextLk)?prev:nextLk)}
     }catch(e){setError(e.message||'Не удалось загрузить архив.')}
     finally{setLoading(false);setLoaded(true)}
   };
@@ -205,6 +212,24 @@ function useArchive(){
    БАЗОВЫЕ КОМПОНЕНТЫ
    ============================================================ */
 function Background(){return<><div className="hud-grid"/><div className="hud-bars"><i/><i/><i/><i/></div><div className="holo-ambient"><i/><i/><i/></div><div className="holo-particles">{Array.from({length:18},(_,i)=><i key={i}/>)}</div><div className="scanline"/></>}
+
+// Один общий AudioContext: создание нового контекста на каждый клик
+// исчерпывает лимит браузера (16 шт. на страницу) и удерживает память.
+let audioCtx=null;
+function playBlip(){
+  try{
+    const A=window.AudioContext||window.webkitAudioContext;
+    if(!A)return;
+    if(!audioCtx)audioCtx=new A();
+    if(audioCtx.state==='suspended')audioCtx.resume();
+    const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.frequency.value=520;
+    g.gain.setValueAtTime(.025,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+.06);
+    o.connect(g).connect(audioCtx.destination);
+    o.start();o.stop(audioCtx.currentTime+.06);
+  }catch{}
+}
 
 /* ============================================================
    ГОЛО-КУРСОР
@@ -298,7 +323,7 @@ function Layout({error='',children}){
       if(keys.slice(-konami.length).join()===konami.join()){setForceMode(v=>!v);keys.length=0}
     };
     const scroll=()=>{const d=document.documentElement;document.documentElement.style.setProperty('--read',`${Math.min(100,Math.max(0,scrollY/(d.scrollHeight-innerHeight||1)*100))}%`)};
-    const click=()=>{try{const A=window.AudioContext||window.webkitAudioContext;if(!A)return;const a=new A(),o=a.createOscillator(),g=a.createGain();o.frequency.value=520;g.gain.setValueAtTime(.025,a.currentTime);g.gain.exponentialRampToValueAtTime(.001,a.currentTime+.06);o.connect(g).connect(a.destination);o.start();o.stop(a.currentTime+.06)}catch{}};
+    const click=playBlip;
     window.addEventListener('pointermove',move);window.addEventListener('keydown',key);window.addEventListener('scroll',scroll,{passive:true});document.addEventListener('click',click);scroll();
     return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('keydown',key);window.removeEventListener('scroll',scroll);document.removeEventListener('click',click)};
   },[]);
